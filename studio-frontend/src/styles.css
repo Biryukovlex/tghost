@@ -235,6 +235,7 @@ button { color: inherit; }
 .studio-draft-notes { display: grid; gap: 5px; color: var(--studio-muted); font-size: 12px; line-height: 1.45; }
 .studio-draft-notes strong { color: var(--studio-soft); font-size: 12px; letter-spacing: .06em; text-transform: uppercase; }
 .studio-draft-notes small { color: #9eb5bd; font-size: 12px; }
+.studio-draft-notes textarea { width: 100%; min-height: 4rem; padding: 8px; border: 1px solid var(--studio-border); border-radius: 8px; background: transparent; color: var(--studio-soft); font: inherit; resize: vertical; }
 .studio-draft-warnings { padding: 9px 10px; border: 1px solid rgba(245,211,153,.22); border-radius: 10px; background: rgba(101,74,41,.16); }
 .studio-source-chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .studio-source-chips a, .studio-source-chips span { padding: 5px 8px; border: 1px solid rgba(110,231,221,.22); border-radius: 99px; color: var(--studio-accent); background: rgba(110,231,221,.06); font-size: 12px; text-decoration: none; }

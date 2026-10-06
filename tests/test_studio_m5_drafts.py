@@ -129,15 +129,15 @@ async def test_history_context_exposes_current_draft_and_compact_version_history
     draft = await repository.save_draft(draft_id=draft["id"], payload={"body": "Owner edit"}, expected_revision=1, new_version=True)
     context = await _draft_context(SimpleNamespace(deps=StudioDeps(repository=repository, workspace_id="community-test", conversation_id=conversation["id"], channel_id=1, cancel_event=asyncio.Event())))
     assert context and context["body"] == "Owner edit"
-    assert context["current_version_origin"] == "user_edit"
-    assert [item["origin"] for item in context["version_history"]] == ["generated", "user_edit"]
-    assert "Unicode characters" in context["latest_edit_summary"]
+    assert context["version"] == 2
+    assert context["revision"] == 2
+    assert set(context) == {"title", "body", "source_links", "media_content", "revision", "version"}
 
 
 def test_m5_agent_registers_all_draft_tools():
     agent = build_agent(Settings(studio_test_mode=True))
     names = set(agent._function_toolset.tools)
-    assert {"create_draft", "revise_draft", "save_draft", "get_draft", "list_draft_versions"}.issubset(names)
+    assert {"create_draft", "edit_draft", "get_draft", "list_draft_versions"}.issubset(names)
 
 
 @pytest.mark.asyncio

@@ -17,6 +17,9 @@ class DraftingTestModel(TestModel):
         super().__init__(**kwargs)
         self.tool_args = tool_args
 
+    def _get_tool_calls(self, parameters):
+        return [(tool.name, tool) for tool in parameters.function_tools if tool.name in self.call_tools]
+
     def gen_tool_args(self, tool_def):
         if tool_def.name in self.tool_args:
             return self.tool_args[tool_def.name]
@@ -51,14 +54,8 @@ async def test_one_prompt_creates_source_supported_draft_without_questionnaire()
         tool_args={
             "create_draft": {
                 "body": "A concise source-backed post.",
-                "working_title": "Today's angle",
-                # Smaller/free tool models often return a URL where the API
-                # expects a conversation source ID and malformed optional
-                # claim metadata. The agent boundary repairs that safely.
-                "source_ids": ["https://news.test/story-1"],
-                "claim_support": [{"claim": "A concise source-backed post.", "source_ids": "story-1"}],
-                "assumptions": ["Use the channel's concise analytical style."],
-                "confidence": "medium",
+                "title": "Today's angle",
+                "source_links": ["https://news.test/story-1"],
             }
         },
     )
@@ -73,7 +70,7 @@ async def test_one_prompt_creates_source_supported_draft_without_questionnaire()
     assert result.output == "Created a source-backed draft."
     assert draft is not None
     assert draft["body"] == "A concise source-backed post."
-    assert draft["source_ids"] == ["story-1"]
+    assert draft["source_links"] == ["https://news.test/story-1"]
     assert draft["claim_support"] == []
     assert len([message for message in result.all_messages() if message.__class__.__name__ == "ModelRequest"]) == 2
 
@@ -117,19 +114,12 @@ async def test_conversational_revision_preserves_direct_user_edit_and_appends_ca
         new_version=True,
     )
     model = DraftingTestModel(
-        call_tools=["get_draft", "revise_draft"],
+        call_tools=["get_draft", "edit_draft"],
         custom_output_text="I kept your edit and saved the model candidate.",
         tool_args={
-            "revise_draft": {
-                "draft_id": draft["id"],
+            "edit_draft": {
+                "expected_revision": user_edit["revision"],
                 "body": "A shorter regenerated candidate.",
-                "instruction": "Make it shorter.",
-                "source_ids": ["story-1"],
-                "claim_support": [{
-                    "claim": "A shorter regenerated candidate.",
-                    "source_ids": ["story-1"],
-                    "passage": "Story one reports that the council approved the plan.",
-                }],
             }
         },
     )

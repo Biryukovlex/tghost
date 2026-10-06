@@ -76,8 +76,10 @@ async def test_manual_draft_and_revision_sets_keep_grounding_and_owner_edits():
 
     first_drafts = []
     for index in range(1, 11):
+        draft_chat = await repository.create_conversation(channel_id=1)
+        await repository.persist_research_bundle(conversation_id=draft_chat["id"], channel_id=1, bundle={"sources": [{"source_id": source_id, "url": "https://example.test/manual-source"}], "stories": []})
         item = await repository.create_draft(
-            conversation_id=conversation["id"],
+            conversation_id=draft_chat["id"],
             channel_id=1,
             payload={
                 "working_title": f"Manual draft {index:02d}",
@@ -124,7 +126,7 @@ async def test_manual_draft_and_revision_sets_keep_grounding_and_owner_edits():
     assert len(candidates) == 20
     assert all(item["current_version_origin"] == "regenerated" for item in candidates)
     current = await repository.get_current_draft(
-        conversation_id=conversation["id"], channel_id=1
+        conversation_id=draft_chat["id"], channel_id=1
     )
     # The latest agent revision is current; the owner's version is retained.
     assert current and current["body"] == candidates[-1]["body"]

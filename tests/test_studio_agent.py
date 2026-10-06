@@ -11,6 +11,9 @@ from app.studio.model import StudioConfigurationError, build_model
 
 
 class ContextFixture:
+    async def get_current_draft(self, **scope):
+        return None
+
     async def channel_context(self, channel_id: int):
         return {
             "channel_id": channel_id,
@@ -87,19 +90,15 @@ def test_explicit_intents_require_the_evidence_tools_before_text_output():
     ) == ("get_channel_context", "search_web", "compare_sources")
     assert workflow_tool_sequence(
         "Prepare a Telegram-ready draft from the strongest sourced story."
-    ) == ("get_channel_context", "search_web", "create_draft")
+    ) == ("get_channel_context", "search_web")
     assert workflow_tool_sequence(
         "Analyze which posts perform best and explain the metrics."
     ) == ("get_performance_evidence",)
     assert workflow_tool_sequence("Make the tone friendlier.") == ()
-    assert workflow_tool_sequence("Сделай драфт поста по первой") == (
-        "get_channel_context",
-        "create_draft",
-    )
+    assert workflow_tool_sequence("Сделай драфт поста по первой") == ()
     assert workflow_tool_sequence("Сделай драфт поста про новую GPT 6, найди информацию") == (
         "get_channel_context",
         "search_web",
-        "create_draft",
     )
 
 

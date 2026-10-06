@@ -6,12 +6,10 @@ from types import SimpleNamespace
 
 import pytest
 from ag_ui.core import RunStartedEvent, RunFinishedEvent, TextMessageStartEvent, TextMessageContentEvent, TextMessageEndEvent
-from pydantic_ai import ModelRetry
 from pydantic_ai.messages import ModelResponse
 from pydantic_ai.ui.ag_ui import AGUIAdapter
 
 from app.config import Settings
-from app.studio.agent import _clean_publication_text, _require_publication_text
 from app.studio.repository import MemoryStudioRepository
 from app.studio.service import StudioService
 
@@ -93,19 +91,10 @@ async def test_final_reply_is_persisted_before_finished_and_history_contains_ans
         assert any(isinstance(item, ModelResponse) and item.parts[0].content == "Already answered" for item in seen[-1]["message_history"])
 
 
-def test_agent_rejects_research_commentary_but_allows_reader_facing_source_links():
-    with pytest.raises(ModelRetry):
-        _require_publication_text("Основной первоисточник — Computerworld; часть сайтов не открылись у меня.")
-    _require_publication_text("Голосовой агент: STT → LLM → TTS. Подробнее: https://example.org/report")
-    cleaned, removed = _clean_publication_text(
-        "Заголовок\n\nПолезный текст для читателя.\n\nОсновной первоисточник — Example; часть сайтов не открылись у меня."
-    )
-    assert removed is True
-    assert cleaned == "Заголовок\n\nПолезный текст для читателя."
 
 
 @pytest.mark.asyncio
-async def test_existing_artifact_turn_requires_revision_instead_of_duplicate_creation(monkeypatch):
+async def test_existing_artifact_does_not_force_a_tool_from_keywords(monkeypatch):
     repository = MemoryStudioRepository()
     conversation = await repository.create_conversation(channel_id=1)
     await repository.create_draft(
@@ -144,7 +133,7 @@ async def test_existing_artifact_turn_requires_revision_instead_of_duplicate_cre
     async for _ in response.body_iterator:
         pass
 
-    assert seen == [("get_channel_context", "revise_draft")]
+    assert seen == [()]
 
 
 @pytest.mark.asyncio

@@ -127,10 +127,10 @@ const TOOL_ACTIVITY_LABELS: Record<string, string> = {
   propose_topic_changes: "Preparing a topic proposal",
   apply_confirmed_topic_changes: "Updating the channel profile",
   explain_recommendation: "Connecting the evidence",
-  get_draft: "Reading the current draft",
+  get_draft: "Reading the draft",
+  list_draft_versions: "Reading draft history",
   create_draft: "Building the draft artifact",
-  revise_draft: "Revising the draft artifact",
-  save_draft: "Saving the draft artifact",
+  edit_draft: "Revising the draft artifact",
 };
 
 const TOOL_ACTIVITY_RESULT_LABELS: Record<string, string> = {
@@ -145,9 +145,9 @@ const TOOL_ACTIVITY_RESULT_LABELS: Record<string, string> = {
   apply_confirmed_topic_changes: "Channel profile updated",
   explain_recommendation: "Evidence received",
   get_draft: "Draft loaded",
+  list_draft_versions: "Draft history loaded",
   create_draft: "Draft artifact saved",
-  revise_draft: "Draft revision saved",
-  save_draft: "Draft saved",
+  edit_draft: "Draft revision saved",
 };
 
 function toolActivityLabel(toolName: unknown): string {
@@ -611,63 +611,7 @@ export function draftSaveErrorMessage(error: unknown): string {
   return "Could not save this draft. Try again.";
 }
 
-export type ClaimDisplayItem = {
-  key: string;
-  claim: string;
-  verified: boolean;
-  passage: string;
-  links: { id: string; url: string; title: string }[];
-};
-
-export function claimDisplayItems(
-  draft: Draft | null,
-  sourceLinks: Map<string, { url: string; title: string }>,
-): ClaimDisplayItem[] {
-  return (draft?.claim_support ?? []).map((item, index) => {
-    const links = (item.source_ids ?? []).flatMap((id) => {
-      const source = sourceLinks.get(id);
-      return source ? [{ ...source, id }] : [];
-    });
-    return {
-      key: `${item.claim}-${index}`,
-      claim: item.claim,
-      verified: item.verified === true,
-      passage: item.passage || "",
-      links,
-    };
-  });
-}
-
-function DraftPanelClaims({ draft, sourceLinks }: {
-  draft: Draft | null;
-  sourceLinks: Map<string, { url: string; title: string }>;
-}) {
-  const items = claimDisplayItems(draft, sourceLinks);
-  if (items.length === 0) return null;
-  return (
-    <div className="studio-draft-notes" aria-label="Claim support">
-      <strong>Claim support</strong>
-      {items.map((item) => (
-        <div key={item.key} className={`studio-claim${item.verified ? "" : " is-unverified"}`}>
-          <p>
-            <span className="studio-claim-mark" aria-label={item.verified ? "Verified claim" : "Unverified claim"}>
-              {item.verified ? "✓" : "!"}
-            </span>
-            <span>{item.claim}</span>
-          </p>
-          {item.passage && <blockquote cite={item.links[0]?.url}>“{item.passage}”</blockquote>}
-          {item.links.length > 0 && (
-            <div className="studio-source-chips">
-              {item.links.map((source) => <a key={source.id} href={source.url} target="_blank" rel="noopener noreferrer">{source.title}</a>)}
-            </div>
-          )}
-          {!item.verified && <p className="studio-claim-note">Not verified against article text — edit the body to re-verify, or treat as uncertain.</p>}
-        </div>
-      ))}
-    </div>
-  );
-}
-function DraftPanel({
+export function DraftPanel({
   conversationId,
   seedDraft,
   open,
@@ -685,7 +629,6 @@ function DraftPanel({
   refreshToken: number;
 }) {
   const [draft, setDraft] = useState<Draft | null>(seedDraft);
-  const [sources, setSources] = useState<{ id: string; title: string; url: string }[]>([]);
   const [panelWidth, setPanelWidth] = useState(() => {
     try { return Math.max(320, Math.min(720, Number(localStorage.getItem("studio-artifact-width")) || 360)); }
     catch { return 360; }
@@ -705,7 +648,7 @@ function DraftPanel({
   // The artifact opens formatted (Full post preview, including the heading);
   // raw-source editing is an explicit Edit action, never the default.
   const [previewOpen, setPreviewOpen] = useState(true);
-  const [conflict, setConflict] = useState<{ server: Draft; localBody: string; localTitle: string } | null>(null);
+  const [conflict, setConflict] = useState<{ server: Draft; local: Draft } | null>(null);
   const [selectedVersion, setSelectedVersion] = useState<number | null>(null);
   // Selecting a version in the selector shows it read-only; only Choose makes
   // it the current version (a pointer move, never a copy).
@@ -771,12 +714,11 @@ function DraftPanel({
       // A newly opened conversation starts formatted; edits are explicit.
       setPreviewOpen(true);
     }
-    return api<{ draft: Draft | null; sources?: typeof sources }>(`/studio/api/conversations/${conversationId}/draft`, { signal: controller.signal })
+    return api<{ draft: Draft | null }>(`/studio/api/conversations/${conversationId}/draft`, { signal: controller.signal })
       .then((payload) => {
         if (isStaleScope(scope, loadScope.current) || loadedConversation.current !== conversationId) return;
-        setSources(payload.sources ?? []);
         setDraft((current) => {
-          if (!conversationChanged && current && localChange.current > 0 && current.body !== payload.draft?.body) return current;
+          if (!conversationChanged && current && localChange.current > 0) return current;
           return payload.draft;
         });
         if (payload.draft) {
@@ -811,21 +753,20 @@ function DraftPanel({
     if (!conversationId || !watchForAgentChanges) return;
     const poll = window.setInterval(() => {
       if (document.visibilityState === "hidden" || !hydrated.current || saveStateRef.current === "saving") return;
-      void api<{ draft: Draft | null; sources?: typeof sources }>(`/studio/api/conversations/${conversationId}/draft`).then((payload) => {
+      void api<{ draft: Draft | null }>(`/studio/api/conversations/${conversationId}/draft`).then((payload) => {
         // Ignore delayed responses once the conversation moved on.
         if (loadedConversation.current !== conversationId || loadScope.current.conversationId !== conversationId) return;
-        setSources(payload.sources ?? []);
         const next = payload.draft;
         const previous = draftRef.current;
         if (next && (!previous || previous.id !== next.id || previous.current_version !== next.current_version || previous.updated_at !== next.updated_at)) {
           void api<{ versions: DraftVersion[] }>(`/studio/api/drafts/${next.id}/versions`).then((history) => setVersions(history.versions)).catch(() => undefined);
         }
-        if (next && !(previous && localChange.current > 0 && previous.body !== next.body)) setSelectedVersion(next.current_version);
+        if (next && !(previous && localChange.current > 0)) setSelectedVersion(next.current_version);
         setDraft((current) => {
           if (!next) return current;
           // Preserve unsaved local typing while a streamed agent run writes a
           // new server version.
-          if (current && localChange.current > 0 && current.body !== next.body) return current;
+          if (current && localChange.current > 0) return current;
           return next;
         });
       }).catch(() => undefined);
@@ -833,18 +774,17 @@ function DraftPanel({
     return () => window.clearInterval(poll);
   }, [conversationId, watchForAgentChanges]);
 
-  const save = (local: Draft, changeId: number, newVersion = false) => {
+  const save = (local: Draft, changeId: number, newVersion = true) => {
     setSaveState("saving");
     void api<{ draft: Draft }>(`/studio/api/drafts/${local.id}`, {
       method: "PATCH",
       headers: { "content-type": "application/json", "x-csrf-token": csrfToken() },
-      body: JSON.stringify({ expected_revision: local.revision, body: local.body, working_title: local.working_title, media_ids: local.media_ids || [], save_as_new_version: newVersion }),
+      body: JSON.stringify({ expected_revision: local.revision, body: local.body, working_title: local.working_title, source_links: local.source_links || [], media_ids: local.media_ids || [], save_as_new_version: newVersion }),
     })
       .then((payload) => {
         if (loadedConversation.current !== local.conversation_id) return;
         const latest = localChange.current === changeId;
-        // Versions are server truth: a plain Save rewrites the current one, a
-        // Save as new version appends one. Refetch rather than guess.
+        // Every save appends a version. Refetch the authoritative history.
         void api<{ versions: DraftVersion[] }>(`/studio/api/drafts/${payload.draft.id}/versions`).then((history) => setVersions(history.versions)).catch(() => undefined);
         setSelectedVersion(payload.draft.current_version);
         setDraft((current) => {
@@ -860,7 +800,7 @@ function DraftPanel({
       })
       .catch((error: unknown) => {
         if (error instanceof StudioApiError && error.status === 409 && error.payload.server_draft) {
-          setConflict({ server: error.payload.server_draft, localBody: local.body, localTitle: local.working_title });
+          setConflict({ server: error.payload.server_draft, local });
           setSaveError("");
           setSaveState("conflict");
         } else {
@@ -870,7 +810,7 @@ function DraftPanel({
       });
   };
 
-  // Edits stay local until the owner presses Save or Save as new version;
+  // Edits stay local until the owner presses Save;
   // nothing is written, and no version is created, on its own.
   useEffect(() => {
     if (saveState !== "unsaved") return;
@@ -885,7 +825,7 @@ function DraftPanel({
     try {
       let selected = draft;
       if (saveState !== "saved") {
-        const result = await api<{ draft: Draft }>(`/studio/api/drafts/${draft.id}`, { method: "PATCH", headers: { "content-type": "application/json", "x-csrf-token": csrfToken() }, body: JSON.stringify({ expected_revision: draft.revision, body: draft.body, working_title: draft.working_title, media_ids: draft.media_ids || [], save_as_new_version: true }) });
+        const result = await api<{ draft: Draft }>(`/studio/api/drafts/${draft.id}`, { method: "PATCH", headers: { "content-type": "application/json", "x-csrf-token": csrfToken() }, body: JSON.stringify({ expected_revision: draft.revision, body: draft.body, working_title: draft.working_title, source_links: draft.source_links || [], media_ids: draft.media_ids || [], save_as_new_version: true }) });
         selected = result.draft;
         if (loadedConversation.current !== draft.conversation_id) return;
         setDraft(selected); localChange.current = 0; setSaveState("saved"); setSelectedVersion(selected.current_version);
@@ -908,7 +848,7 @@ function DraftPanel({
     setDraft((current) => {
       if (!current) return current;
       if (field === "working_title") {
-        return { ...current, working_title: value.slice(0, 160), copied_at: null };
+        return { ...current, working_title: value.slice(0, 240), copied_at: null };
       }
       const plain = plainFromMarkdown(value);
       return {
@@ -991,7 +931,7 @@ function DraftPanel({
       setConflict(null);
     }).catch((error: unknown) => {
       if (error instanceof StudioApiError && error.status === 409 && error.payload.server_draft) {
-        setConflict({ server: error.payload.server_draft, localBody: draft.body, localTitle: draft.working_title });
+        setConflict({ server: error.payload.server_draft, local: draft });
         setSaveState("conflict");
       } else {
         setSaveError(draftSaveErrorMessage(error));
@@ -1004,7 +944,7 @@ function DraftPanel({
     if (!conflict) return;
     localChange.current += 1;
     // Adopt the server revision so the next Save is accepted, keep the text.
-    setDraft({ ...conflict.server, body: conflict.localBody, working_title: conflict.localTitle });
+    setDraft({ ...conflict.server, body: conflict.local.body, working_title: conflict.local.working_title, source_links: conflict.local.source_links, media_ids: conflict.local.media_ids });
     setConflict(null);
     setSaveState("unsaved");
     setSaveError("");
@@ -1019,28 +959,11 @@ function DraftPanel({
     setSaveError("");
   };
 
-  const sourceLinks = new Map<string, { url: string; title: string }>();
-  const addSource = (id: string, url: string, label: string) => {
-    try {
-      const parsed = new URL(url);
-      if (id && ["http:", "https:"].includes(parsed.protocol) && !parsed.username && !parsed.password)
-        sourceLinks.set(id, { url: parsed.href, title: label.trim() || parsed.hostname });
-    } catch { /* Malformed model metadata cannot crash the artifact. */ }
-  };
-  for (const item of draft?.web_evidence ?? []) {
-    const id = String(item.source_id ?? item.id ?? "");
-    const url = String(item.url ?? "");
-    addSource(id, url, String(item.title ?? item.headline ?? ""));
-  }
-  for (const source of sources) {
-    addSource(source.id, source.url, source.title);
-  }
-  const clickableSources = Array.from(new Map(
-    (draft?.source_ids ?? []).flatMap((id) => {
-      const source = sourceLinks.get(id);
-      return source ? [[source.url, source] as const] : [];
-    }),
-  ).values());
+  const shownLinks = (viewingOld ? viewedVersion?.source_links : draft?.source_links) || [];
+  const clickableSources = shownLinks.filter((url) => {
+    try { const parsed = new URL(url); return ["http:", "https:"].includes(parsed.protocol) && !parsed.username && !parsed.password; }
+    catch { return false; }
+  });
 
   return (
     <aside className={`studio-draft ${open ? "is-open" : ""}`} aria-label="Draft artifact">
@@ -1068,7 +991,7 @@ function DraftPanel({
         </div>
       ) : (
         <div className="studio-draft-content">
-          <label className="studio-draft-title">Artifact title<input aria-label="Artifact title" value={draft.working_title} disabled={scheduling} onChange={(event) => edit("working_title", event.target.value)} maxLength={160} placeholder="Untitled draft" /><span className="studio-draft-title-hint">Kept for search and cross-checking. Not copied to the post.</span></label>
+          <label className="studio-draft-title">Artifact title<input aria-label="Artifact title" value={viewingOld ? viewedVersion?.working_title || "Title unavailable for this older version" : draft.working_title} disabled={viewingOld || scheduling} onChange={(event) => edit("working_title", event.target.value)} maxLength={240} placeholder="Untitled draft" /><span className="studio-draft-title-hint">Draft name. The publication text is below.</span></label>
           {viewingOld && <p className="studio-draft-viewing" role="status">Viewing v{selectedVersion} (read-only). Restore makes it the current version.</p>}
           <ImageAttachments key={draft.id} onBusyChange={setImageUploading} draftId={draft.id} ids={viewingOld ? viewedVersion?.media_ids || [] : draft.media_ids || []} version={viewingOld ? viewedVersion?.version : undefined} disabled={viewingOld || scheduling || imageUploading || saveState === "saving"} onChange={(ids) => { localChange.current += 1; setDraft(current => current ? { ...current, media_ids: ids } : current); setSaveState("unsaved"); setSaveError(""); }} />
           {previewOpen
@@ -1079,9 +1002,15 @@ function DraftPanel({
             <span>{shownCounter.overLimit ? "Copy blocked · over Telegram limit" : isBlankBody ? "Copy blocked · post is blank" : shownCounter.warning ? "Near Telegram limit" : "Telegram ready"}</span>
           </div>
           {conflict && <div className="studio-conflict" role="alert"><strong>This draft changed elsewhere.</strong><span>Your local text is preserved.</span><div><button type="button" onClick={keepLocal}>Keep my text</button><button type="button" onClick={useServer}>Use server version</button></div></div>}
-          {clickableSources.length > 0 && <div className="studio-draft-notes"><strong>Sources</strong><div className="studio-source-chips">{clickableSources.map((source) => <a key={source.url} href={source.url} target="_blank" rel="noopener noreferrer">{source.title}</a>)}</div></div>}
-          <DraftPanelClaims draft={draft} sourceLinks={sourceLinks} />
-          <div className="studio-draft-toolbar"><button type="button" className="studio-draft-mode" aria-pressed={previewOpen} onClick={() => setPreviewOpen((open) => !open)}>{previewOpen ? "Edit post" : "Preview"}</button><span className="studio-draft-save-group"><button type="button" className="studio-draft-save" onClick={() => saveNow(false)} disabled={!canSave || viewingOld || scheduling || imageUploading} title="Overwrite the current version with your edits">Save</button><button type="button" className="studio-draft-save" onClick={() => saveNow(true)} disabled={!canSave || viewingOld || scheduling || imageUploading} title="Keep the current version and add your edits as a new one">Save as new version</button></span><label className="studio-version-select">Version<select aria-label="Draft version" value={selectedVersion ?? draft.current_version} onChange={(event) => setSelectedVersion(Number(event.target.value))}>{versions.map((version) => <option key={version.version} value={version.version}>v{version.version} · {version.origin}</option>)}</select><button type="button" className="studio-restore" onClick={() => { const version = versions.find((item) => item.version === selectedVersion); if (version && version.version !== draft.current_version) choose(version); }} disabled={selectedVersion === null || selectedVersion === draft.current_version || saveState === "saving"} title="Make the viewed version the current one (no copy is created)">Restore</button></label></div>
+          {clickableSources.length > 0 && <div className="studio-draft-notes"><strong>Sources</strong><div className="studio-source-chips">{clickableSources.map((url) => <a key={url} href={url} target="_blank" rel="noopener noreferrer">{new URL(url).hostname}</a>)}</div></div>}
+          <label className="studio-draft-notes">Source links
+            <textarea aria-label="Source links" value={shownLinks.join("\n")} readOnly={viewingOld || scheduling} placeholder="One URL per line" onChange={(event) => {
+              localChange.current += 1;
+              setDraft(current => current ? { ...current, source_links: event.target.value.split("\n") } : current);
+              setSaveState("unsaved"); setSaveError("");
+            }} />
+          </label>
+          <div className="studio-draft-toolbar"><button type="button" className="studio-draft-mode" aria-pressed={previewOpen} onClick={() => setPreviewOpen((open) => !open)}>{previewOpen ? "Edit post" : "Preview"}</button><span className="studio-draft-save-group"><button type="button" className="studio-draft-save" onClick={() => saveNow(true)} disabled={!canSave || viewingOld || scheduling || imageUploading} title="Save your edits as a new version">Save</button></span><label className="studio-version-select">Version<select aria-label="Draft version" value={selectedVersion ?? draft.current_version} onChange={(event) => setSelectedVersion(Number(event.target.value))}>{versions.map((version) => <option key={version.version} value={version.version}>v{version.version} · {version.origin}</option>)}</select><button type="button" className="studio-restore" onClick={() => { const version = versions.find((item) => item.version === selectedVersion); if (version && version.version !== draft.current_version) choose(version); }} disabled={selectedVersion === null || selectedVersion === draft.current_version || saveState === "saving"} title="Make the viewed version the current one (no copy is created)">Restore</button></label></div>
           {saveError && <p className="studio-save-error" role="alert">{saveError}</p>}
         </div>
       )}

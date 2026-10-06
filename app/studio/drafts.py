@@ -9,8 +9,10 @@ provenance, and calculates Unicode character counts on the server.
 from __future__ import annotations
 
 from typing import Any, Literal
+from urllib.parse import urlsplit
+import uuid
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, field_validator
 
 from .markdown import render_markdown_plain, validate_markdown_body
 
@@ -20,6 +22,7 @@ DRAFT_WARNING_CHARS = 3800
 MAX_DRAFT_BODY_INPUT = 32_000
 MAX_TITLE_CHARS = 240
 MAX_LIST_ITEMS = 40
+_HTTP_URL = TypeAdapter(AnyHttpUrl)
 
 DraftOrigin = Literal["generated", "regenerated", "user_edit"]
 DraftConfidence = Literal["high", "medium", "low"]
@@ -50,6 +53,59 @@ class DraftConflictError(RuntimeError):
         self.current = current
         self.expected_revision = expected_revision
         super().__init__("The draft changed in another tab. Review both versions before saving.")
+
+
+def validate_source_links(values: list[str]) -> list[str]:
+    """Store links without fetching them. Retrieval still uses SSRF defenses."""
+    links = []
+    for value in values:
+        link = str(value).strip()
+        if not link:
+            continue
+        try:
+            _HTTP_URL.validate_python(link)
+            parsed = urlsplit(link)
+            valid = parsed.scheme in {"http", "https"} and parsed.hostname and not parsed.username and not parsed.password
+        except ValueError:
+            valid = False
+        if not valid or len(link) > 2048 or any(character.isspace() for character in link):
+            raise DraftValidationError("invalid_source_link", "Source links must be HTTP(S) URLs without credentials.")
+        if link not in links:
+            links.append(link)
+    return links
+
+
+class DraftContent(BaseModel):
+    """The four editable content fields exposed to the language model."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(min_length=1, max_length=MAX_TITLE_CHARS)
+    body: str = Field(max_length=MAX_DRAFT_BODY_INPUT)
+    source_links: list[str] = Field(default_factory=list, max_length=MAX_LIST_ITEMS)
+    media_content: list[str] = Field(default_factory=list, max_length=10)
+
+    @field_validator("source_links")
+    @classmethod
+    def _links(cls, values: list[str]) -> list[str]:
+        return validate_source_links(values)
+
+    @field_validator("media_content")
+    @classmethod
+    def _media(cls, values: list[str]) -> list[str]:
+        try:
+            ids = [str(uuid.UUID(value)) for value in values]
+        except ValueError:
+            raise DraftValidationError("invalid_media", "Media content must contain uploaded image IDs.") from None
+        if len(set(ids)) != len(ids):
+            raise DraftValidationError("invalid_media", "Choose distinct images.")
+        return ids
+
+    def storage_payload(self) -> dict[str, Any]:
+        # Existing rows keep legacy research metadata for compatibility, but
+        # that metadata is not part of the new draft contract or a save gate.
+        return {"working_title": self.title, "body": self.body, "source_links": self.source_links, "media_ids": self.media_content,
+                "source_ids": [], "claim_support": []}
 
 
 class ClaimSupport(BaseModel):
@@ -97,12 +153,18 @@ class ClaimSupport(BaseModel):
 
 
 class DraftInput(BaseModel):
-    """Model/tool/API input before server-calculated fields are added."""
+    """Storage input, including legacy fields retained for existing artifacts.
+
+    LLM tools use DraftContent, never this compatibility contract.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     working_title: str = Field(default="Untitled draft", max_length=MAX_TITLE_CHARS)
     body: str = Field(default="", max_length=MAX_DRAFT_BODY_INPUT)
+    source_links: list[str] = Field(default_factory=list, max_length=MAX_LIST_ITEMS)
+
+    _links = field_validator("source_links")(validate_source_links)
     source_ids: list[str] = Field(default_factory=list, max_length=MAX_LIST_ITEMS)
     claim_support: list[ClaimSupport] = Field(default_factory=list, max_length=MAX_LIST_ITEMS)
     assumptions: list[str] = Field(default_factory=list, max_length=MAX_LIST_ITEMS)

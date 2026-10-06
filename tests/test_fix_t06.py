@@ -95,9 +95,9 @@ async def test_save_draft_tool_never_claims_a_user_edit():
         payload={"body": "Original creative body", "creative": True},
     )
     agent = build_agent(_settings())
-    save = agent._function_toolset.tools["save_draft"].function
-    result = await save(SimpleNamespace(deps=_deps(repo, conversation)), str(draft["id"]), int(draft["revision"]), "Model rewrote this body")
-    assert result["status"] == "saved"
+    save = agent._function_toolset.tools["edit_draft"].function
+    result = await save(SimpleNamespace(deps=_deps(repo, conversation)), expected_revision=int(draft["revision"]), body="Model rewrote this body")
+    assert result["status"] == "edited"
     row = await repo.get_draft(draft["id"])
     assert row["body"] == "Model rewrote this body"
     assert row["current_version_origin"] == "regenerated"
@@ -114,8 +114,8 @@ async def test_create_draft_with_unknown_source_ids_is_blocked_not_backfilled():
     result = await create(
         SimpleNamespace(deps=_deps(repo, conversation)),
         body="Заголовок\n\nФактическое утверждение о бюджете.",
-        source_ids=["src_does_not_exist"],
-        creative=False,
+        title="Budget",
+        source_links=["javascript:invalid"],
     )
     assert result["status"] == "blocked", result
     assert await repo.get_current_draft(conversation_id=conversation["id"], channel_id=1) is None

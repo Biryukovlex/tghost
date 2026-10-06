@@ -52,11 +52,9 @@ async def test_reference_tools_respect_opt_in_revocation_and_private_context():
     assert result_profile['profile']['topics_text'] == 'Reference topics'
     assert 'PRIVATE' not in json.dumps([result, result_profile])
     assert deps.channel_id == 1
-    draft_result = await tools['create_draft'].function(ctx, body='A synthetic creative angle.', creative=True)
-    evidence = draft_result['draft']['channel_evidence'][0]
-    assert evidence['role'] == 'reference' and evidence['channel_id'] == 2
-    assert evidence['link'] == 'https://t.me/reference/7'
-    assert draft_result['decision_summary']['channel_evidence'][0]['identifier'] == '@reference'
+    draft_result = await tools['create_draft'].function(ctx, title='Synthetic angle', body='A synthetic creative angle.', source_links=['https://t.me/reference/7'])
+    assert draft_result['draft']['source_links'] == ['https://t.me/reference/7']
+    assert 'decision_summary' not in draft_result
     class ReferenceTestModel(TestModel):
         def gen_tool_args(self, tool_def):
             return {

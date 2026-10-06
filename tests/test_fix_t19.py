@@ -1,36 +1,9 @@
-"""Copy fidelity and no source lists in the post body."""
-from app.studio.agent import _clean_publication_text, _strip_trailing_source_list
+"""Copy fidelity, explicit history restore, and no inferred draft workflow."""
 from app.studio.markdown import render_markdown_html
 
 
-def test_trailing_source_list_is_removed_but_inline_links_stay():
-    body = (
-        "**Заголовок**\n\n"
-        "Совет утвердил бюджет, [документ](https://zsro.ru/doc) опубликован.\n\n"
-        "Источники:\n- https://zsro.ru/doc\n- [Коммерсант](https://kommersant.ru/x)"
-    )
-    cleaned, removed = _strip_trailing_source_list(body)
-    assert removed is True
-    assert cleaned.endswith("опубликован.")
-    assert "[документ](https://zsro.ru/doc)" in cleaned
-    assert "Источники" not in cleaned
-
-    english = "Text.\n\nSources: https://a.example, https://b.example"
-    cleaned2, removed2 = _strip_trailing_source_list(english)
-    assert (cleaned2, removed2) == ("Text.", True)
-
-    # A trailing paragraph that merely mentions sources without links is prose and stays.
-    prose = "Text.\n\nSources close to the committee say the vote is postponed."
-    assert _strip_trailing_source_list(prose) == (prose, False)
-    # A header without links underneath is not a list either.
-    assert _strip_trailing_source_list("Text.\n\nLinks:") == ("Text.\n\nLinks:", False)
 
 
-def test_clean_publication_text_reports_removed_source_list():
-    cleaned, removed = _clean_publication_text("Post body.\n\n**Sources**\nhttps://x.example/1\nhttps://x.example/2")
-    assert cleaned == "Post body." and removed is True
-    unchanged, removed_none = _clean_publication_text("Post body with an inline [link](https://x.example).")
-    assert removed_none is False and unchanged.startswith("Post body with an inline")
 
 
 def test_clipboard_html_uses_br_line_breaks():
@@ -68,25 +41,11 @@ async def test_restore_alias_moves_the_pointer_and_never_mints_a_version():
     assert len(await repo.list_draft_versions(draft_id=draft["id"])) == 2
 
 
-def test_revision_requests_are_recognised_in_both_languages():
-    from app.studio.agent import is_revision_request
-
-    for text in (
-        "Add bold title and subtitles in the draft",
-        "make it shorter please",
-        "Добавь жирный заголовок и подзаголовки",
-        "Сократи текст и убери эмодзи",
-        "Replace the last paragraph with a question to readers",
-    ):
-        assert is_revision_request(text), text
-    for text in ("What did the channel post last week?", "Найди свежие новости про бюджет", "thanks"):
-        assert not is_revision_request(text), text
 
 
 @_pytest.mark.asyncio
-async def test_change_request_with_existing_draft_requires_revise_draft(monkeypatch):
-    """The server evidence contract must include revise_draft when a draft exists
-    and the user asks to change the post, even without a 'draft/write' verb."""
+async def test_change_request_is_not_rewritten_into_a_server_tool_contract(monkeypatch):
+    """The language model chooses the explicit chat-scoped draft operation."""
     from app.studio import service as service_module
     from app.studio.repository import MemoryStudioRepository
     from app.studio.service import StudioService
@@ -125,11 +84,10 @@ async def test_change_request_with_existing_draft_requires_revise_draft(monkeypa
         assert deps is not None, "adapter was not invoked"
         return deps.required_tools
 
-    # A request that names the draft already routed to revise_draft; the fix is
-    # for change requests without a draft/write verb, in either language.
-    assert "revise_draft" in await contract_for("Add bold title and subtitles in the draft")
+    # Draft words and edit requests no longer rewrite the tool contract.
+    assert () == await contract_for("Add bold title and subtitles in the draft")
     for message in ("Make it shorter and drop the emoji", "Сделай короче и убери эмодзи", "Add a subtitle before the second paragraph", "Убери подпись в конце"):
         tools = await contract_for(message)
-        assert "revise_draft" in tools, (message, tools)
+        assert tools == (), (message, tools)
     # Without a change request nothing is forced.
     assert "revise_draft" not in await contract_for("thanks, looks good")

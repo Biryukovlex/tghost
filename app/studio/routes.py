@@ -898,7 +898,7 @@ def build_router() -> APIRouter:
                     draft_id=parsed,
                     payload=values,
                     expected_revision=payload.expected_revision,
-                    new_version=bool(payload.save_as_new_version),
+                    new_version=True,
                 )
         except DraftConflictError as exc:
             local = {key: value for key, value in payload.model_dump(exclude={"expected_revision", "restore_version", "choose_version", "save_as_new_version"}, exclude_none=True).items()}

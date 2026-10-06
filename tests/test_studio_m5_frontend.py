@@ -12,7 +12,7 @@ def test_m5_artifact_panel_contract_is_built_and_responsive():
     # T44: Copy is "Copy full post" (sticky in phone Draft, toolbar on desktop)
     assert "Copy full post" in source
     assert "Artifact title" in source
-    assert "Kept for search and cross-checking. Not copied to the post." in source
+    assert "Draft name. The publication text is below." in source
     assert 'aria-label="Artifact title"' in source
     # Old "Copy post" string removed
     assert "Copy post" not in source
@@ -26,7 +26,8 @@ def test_m5_artifact_panel_contract_is_built_and_responsive():
     assert "plainFromMarkdown" in source or "character_count" in source
     assert "postText" not in source
     assert "draft_conflict" in source or "Keep my text" in source
-    assert "Choose" in source and "Save as new version" in source and "Source" in source
+    assert "Save" in source and "Source links" in source
+    assert "Overwrite the current version" not in source
     assert "studio-draft.is-open" in styles
     assert "prefers-reduced-motion" in styles
     assert "Copy full post" in bundle

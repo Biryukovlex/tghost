@@ -72,15 +72,12 @@ async def test_draft_keeps_read_evidence_after_another_search(restart, changed_i
     agent = build_agent(settings)
     result = await agent._function_toolset.tools["create_draft"].function(
         SimpleNamespace(deps=deps), body="Example Labs released Atlas. It supports 12 tasks.",
-        source_ids=[original_id], claim_support=[{
-            "claim": "Example Labs released Atlas on 6 October 2026. Atlas supports 12 tasks.",
-            "source_ids": [original_id], "passage": ARTICLE,
-        }],
+        title="Example Labs", source_links=[URL],
     )
     assert result["status"] == "created"
     draft = await repository.get_current_draft(conversation_id=conversation["id"], channel_id=1)
-    assert draft["claim_support"][0]["verified"] is True
-    assert draft["source_ids"] == [original_id]
+    assert draft["source_links"] == [URL]
+    assert draft["claim_support"] == []
 
 
 @pytest.mark.asyncio

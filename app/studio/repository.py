@@ -76,6 +76,7 @@ def _draft_public(row: dict[str, Any]) -> dict[str, Any]:
     data = dict(row)
     list_defaults: tuple[tuple[str, list[Any]], ...] = (
         ("media_ids", []),
+        ("source_links", []),
         ("source_ids", []),
         ("claim_support", []),
         ("assumptions", []),
@@ -99,6 +100,7 @@ def _draft_public(row: dict[str, Any]) -> dict[str, Any]:
             data[key] = _iso(data[key])
     body = str(data.get("body") or "")
     data["body"] = body
+    data["title"] = str(data.get("working_title") or "Untitled draft")
     plain = render_markdown_plain(body)
     data["body_plain"] = plain
     data["body_html"] = render_markdown_html(body)
@@ -120,6 +122,9 @@ def _version_public(row: dict[str, Any]) -> dict[str, Any]:
     data = dict(row)
     data["id"] = int(data["id"])
     data["draft_id"] = str(data["draft_id"])
+    data["title"] = data.get("working_title")
+    data["source_links"] = _json_value(data.get("source_links"), [])
+    data["media_ids"] = _json_value(data.get("media_ids"), [])
     data["version"] = int(data["version"])
     data["body"] = str(data.get("body") or "")
     # New rows persist the authoritative UTF-16 count.  Recompute only for
@@ -134,7 +139,9 @@ def _version_public(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _draft_values(payload: dict[str, Any] | DraftInput, *, known_source_ids: set[str] | frozenset[str], require_sources: bool = True) -> dict[str, Any]:
-    validated = validate_draft_input(payload, known_source_ids=known_source_ids, require_sources=require_sources)
+    if isinstance(payload, dict):
+        payload = {key: value for key, value in payload.items() if key != "media_ids"}
+    validated = validate_draft_input(payload, known_source_ids=known_source_ids, require_sources=False)
     values = validated.model_dump(mode="json")
     values["claim_support"] = [item.model_dump(mode="json") for item in validated.claim_support]
     return values
@@ -842,7 +849,7 @@ class StudioRepository:
 
     async def _validate_draft_references(self, session, *, conversation_id: uuid.UUID, payload: dict[str, Any]) -> set[str]:
         known = await self._draft_source_ids(session, conversation_id=conversation_id)
-        validated = validate_draft_input(payload, known_source_ids=known, require_sources=not bool(payload.get("creative", False)))
+        validated = validate_draft_input({key: value for key, value in payload.items() if key != "media_ids"}, known_source_ids=known, require_sources=False)
         if validated.story_cluster_id:
             story = (
                 await session.execute(
@@ -904,6 +911,11 @@ class StudioRepository:
         workspace_id = self.workspace_id
         async with self.db.sessions.session() as session:
             await self._validate_draft_scope(session, conversation_id=conversation_id, channel_id=channel_id)
+            active = (await session.execute(text("SELECT active_draft_id FROM studio_conversations WHERE workspace_id=:workspace_id AND id=:conversation_id FOR UPDATE"), {"workspace_id": workspace_id, "conversation_id": conversation_id})).scalar_one()
+            if active is not None:
+                raise DraftValidationError("draft_exists", "This chat already has a draft. Edit the existing draft.")
+            if payload.get("media_ids"):
+                raise DraftValidationError("invalid_media", "Create the draft before uploading its images.")
             known = await self._validate_draft_references(session, conversation_id=conversation_id, payload=payload)
             values = _draft_values(payload, known_source_ids=known, require_sources=not bool(payload.get("creative", False)))
             if values.get("analysis_id"):
@@ -917,6 +929,7 @@ class StudioRepository:
                 "story_cluster_id": values.get("story_cluster_id"),
                 "analysis_id": values.get("analysis_id"),
                 "working_title": values["working_title"],
+                "source_links": json.dumps(values["source_links"]),
                 "body": values["body"],
                 "status": "working",
                 "source_ids": json.dumps(values["source_ids"]),
@@ -939,14 +952,14 @@ class StudioRepository:
                     text(
                         """INSERT INTO studio_drafts(
                                id, workspace_id, conversation_id, channel_id,
-                               story_cluster_id, analysis_id, working_title, body,
+                               story_cluster_id, analysis_id, working_title, source_links, body,
                                status, source_ids, claim_support, assumptions, warnings,
                                channel_evidence, web_evidence, confidence, creative,
                                provider, model, prompt_version, revision, current_version,
                                current_version_origin
                            ) VALUES (
                                :id, :workspace_id, :conversation_id, :channel_id,
-                               :story_cluster_id, :analysis_id, :working_title, :body,
+                               :story_cluster_id, :analysis_id, :working_title, CAST(:source_links AS jsonb), :body,
                                :status, CAST(:source_ids AS jsonb), CAST(:claim_support AS jsonb),
                                CAST(:assumptions AS jsonb), CAST(:warnings AS jsonb),
                                CAST(:channel_evidence AS jsonb), CAST(:web_evidence AS jsonb),
@@ -960,8 +973,8 @@ class StudioRepository:
             await session.execute(
                 text(
                     """INSERT INTO studio_draft_versions(
-                               workspace_id, draft_id, version, body, origin, instruction, character_count
-                           ) VALUES (:workspace_id, :draft_id, 1, :body, :origin, :instruction, :character_count)"""
+                               workspace_id, draft_id, version, body, origin, instruction, character_count, working_title, source_links
+                           ) VALUES (:workspace_id, :draft_id, 1, :body, :origin, :instruction, :character_count, :working_title, CAST(:source_links AS jsonb))"""
                 ),
                 {
                     "workspace_id": workspace_id,
@@ -970,6 +983,8 @@ class StudioRepository:
                     "origin": origin,
                     "instruction": str(instruction or "")[:4_000],
                     "character_count": values["character_count"],
+                    "working_title": values["working_title"],
+                    "source_links": json.dumps(values["source_links"]),
                 },
             )
             await session.execute(
@@ -1087,8 +1102,8 @@ class StudioRepository:
                 await session.execute(
                     text(
                         """INSERT INTO studio_draft_versions(
-                                   workspace_id, draft_id, version, body, origin, instruction, character_count, media_ids
-                               ) VALUES (:workspace_id, :draft_id, :version, :body, :origin, :instruction, :character_count, CAST(:media_ids AS jsonb))"""
+                                   workspace_id, draft_id, version, body, origin, instruction, character_count, media_ids, working_title, source_links
+                               ) VALUES (:workspace_id, :draft_id, :version, :body, :origin, :instruction, :character_count, CAST(:media_ids AS jsonb), :working_title, CAST(:source_links AS jsonb))"""
                     ),
                     {
                         "workspace_id": workspace_id,
@@ -1099,6 +1114,8 @@ class StudioRepository:
                         "instruction": str(instruction or "")[:4_000],
                         "character_count": values["character_count"],
                         "media_ids": json.dumps(media_ids),
+                        "working_title": values["working_title"],
+                        "source_links": json.dumps(values["source_links"]),
                     },
                 )
             else:
@@ -1106,7 +1123,7 @@ class StudioRepository:
                 await session.execute(
                     text(
                         """UPDATE studio_draft_versions
-                              SET body=:body, origin=:origin, instruction=:instruction, character_count=:character_count, media_ids=CAST(:media_ids AS jsonb)
+                              SET body=:body, origin=:origin, instruction=:instruction, character_count=:character_count, media_ids=CAST(:media_ids AS jsonb), working_title=:working_title, source_links=CAST(:source_links AS jsonb)
                             WHERE workspace_id=:workspace_id AND draft_id=:draft_id AND version=:version"""
                     ),
                     {
@@ -1118,6 +1135,8 @@ class StudioRepository:
                         "instruction": str(instruction or "")[:4_000],
                         "character_count": values["character_count"],
                         "media_ids": json.dumps(media_ids),
+                        "working_title": values["working_title"],
+                        "source_links": json.dumps(values["source_links"]),
                     },
                 )
             update_params = {
@@ -1126,6 +1145,7 @@ class StudioRepository:
                 "story_cluster_id": values.get("story_cluster_id"),
                 "analysis_id": uuid.UUID(str(values["analysis_id"])) if values.get("analysis_id") else None,
                 "working_title": values["working_title"],
+                "source_links": json.dumps(values["source_links"]),
                 "media_ids": json.dumps(media_ids),
                 "body": values["body"],
                 "status": "working",
@@ -1149,7 +1169,7 @@ class StudioRepository:
                     text(
                         """UPDATE studio_drafts SET
                                story_cluster_id=:story_cluster_id, analysis_id=:analysis_id,
-                               working_title=:working_title, body=:body, status=:status, media_ids=CAST(:media_ids AS jsonb),
+                               working_title=:working_title, source_links=CAST(:source_links AS jsonb), body=:body, status=:status, media_ids=CAST(:media_ids AS jsonb),
                                source_ids=CAST(:source_ids AS jsonb), claim_support=CAST(:claim_support AS jsonb),
                                assumptions=CAST(:assumptions AS jsonb), warnings=CAST(:warnings AS jsonb),
                                channel_evidence=CAST(:channel_evidence AS jsonb), web_evidence=CAST(:web_evidence AS jsonb),
@@ -1208,7 +1228,7 @@ class StudioRepository:
             filters.append("d.channel_id=:channel_id")
             params["channel_id"] = int(channel_id)
         result = await self.db._execute(
-            f"""SELECT v.id, v.draft_id, v.version, v.body, v.origin, v.instruction, v.character_count, v.created_at
+            f"""SELECT v.id, v.draft_id, v.version, v.body, v.origin, v.instruction, v.character_count, v.created_at, v.media_ids, v.working_title, v.source_links
                  FROM studio_draft_versions v
                  JOIN studio_drafts d ON d.workspace_id=v.workspace_id AND d.id=v.draft_id
                 WHERE {' AND '.join(filters)}
@@ -1246,7 +1266,7 @@ class StudioRepository:
             row = (
                 await session.execute(
                     text(
-                        """UPDATE studio_drafts SET body=:body, media_ids=CAST(:media_ids AS jsonb), current_version=:version,
+                        """UPDATE studio_drafts SET body=:body, working_title=COALESCE(:working_title, working_title), source_links=COALESCE(CAST(:source_links AS jsonb), source_links), media_ids=CAST(:media_ids AS jsonb), current_version=:version,
                                   current_version_origin=:origin, revision=:revision, updated_at=now()
                             WHERE workspace_id=:workspace_id AND id=:draft_id RETURNING *"""
                     ),
@@ -1254,6 +1274,8 @@ class StudioRepository:
                         "workspace_id": workspace_id,
                         "draft_id": draft_id,
                         "body": selected["body"],
+                        "working_title": selected.get("working_title"),
+                        "source_links": json.dumps(selected["source_links"]) if selected.get("source_links") is not None else None,
                         "media_ids": json.dumps(selected.get("media_ids", [])),
                         "version": int(selected["version"]),
                         "origin": selected["origin"],
@@ -2614,6 +2636,7 @@ class MemoryStudioRepository:
             "story_cluster_id": values.get("story_cluster_id"),
             "analysis_id": values.get("analysis_id"),
             "working_title": values["working_title"],
+                    "source_links": list(values["source_links"]),
             "body": values["body"],
             "status": "working",
             "source_ids": list(values["source_ids"]),
@@ -2640,12 +2663,19 @@ class MemoryStudioRepository:
             "draft_id": draft_id,
             "version": 1,
             "body": values["body"],
+            "working_title": values["working_title"],
+            "source_links": list(values["source_links"]),
+            "media_ids": [],
             "origin": origin,
             "instruction": str(instruction or "")[:4_000],
             "character_count": values["character_count"],
             "created_at": now,
         }
         async with self._lock:
+            if conversation.get("active_draft_id"):
+                raise DraftValidationError("draft_exists", "This chat already has a draft. Edit the existing draft.")
+            if payload.get("media_ids"):
+                raise DraftValidationError("invalid_media", "Create the draft before uploading its images.")
             self.drafts[draft_id] = row
             self.draft_versions[draft_id] = [version]
             self._draft_version_id = max(self._draft_version_id, 1)
@@ -2707,6 +2737,9 @@ class MemoryStudioRepository:
             values, _ = self._validate_memory_draft(current["conversation_id"], merged)
             if origin == "user_edit":
                 _preserve_server_verification_on_user_edit(public, values)
+            media_ids = payload.get("media_ids", current.get("media_ids", []))
+            if media_ids:
+                raise DraftValidationError("invalid_media", "Image attachments require PostgreSQL media storage.")
             versions = self.draft_versions.setdefault(draft_id, [])
             now = utcnow()
             current_version = int(public.get("current_version") or 1)
@@ -2720,6 +2753,9 @@ class MemoryStudioRepository:
                         "draft_id": draft_id,
                         "version": next_version,
                         "body": values["body"],
+                        "working_title": values["working_title"],
+                        "source_links": list(values["source_links"]),
+                        "media_ids": list(media_ids),
                         "origin": origin,
                         "instruction": str(instruction or "")[:4_000],
                         "character_count": values["character_count"],
@@ -2730,12 +2766,13 @@ class MemoryStudioRepository:
                 next_version = current_version
                 for item in versions:
                     if int(item["version"]) == current_version:
-                        item.update({"body": values["body"], "origin": origin, "instruction": str(instruction or "")[:4_000], "character_count": values["character_count"]})
+                        item.update({"working_title": values["working_title"], "source_links": list(values["source_links"]), "media_ids": list(media_ids), "body": values["body"], "origin": origin, "instruction": str(instruction or "")[:4_000], "character_count": values["character_count"]})
             current.update(
                 {
                     "story_cluster_id": values.get("story_cluster_id"),
                     "analysis_id": values.get("analysis_id"),
                     "working_title": values["working_title"],
+                    "source_links": list(values["source_links"]),
                     "body": values["body"],
                     "status": "working",
                     "source_ids": list(values["source_ids"]),
@@ -2796,6 +2833,9 @@ class MemoryStudioRepository:
                 return public
             current.update({
                 "body": selected["body"],
+                "working_title": selected.get("working_title") or public["working_title"],
+                "source_links": selected.get("source_links") if selected.get("source_links") is not None else public["source_links"],
+                "media_ids": selected.get("media_ids", []),
                 "current_version": int(selected["version"]),
                 "current_version_origin": selected["origin"],
                 "revision": int(public["revision"]) + 1,

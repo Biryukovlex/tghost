@@ -58,6 +58,9 @@ class FakeReader:
 
 
 class Context:
+    async def get_current_draft(self, **scope):
+        return None
+
     async def channel_context(self, channel_id: int):
         return {
             "channel_id": channel_id,

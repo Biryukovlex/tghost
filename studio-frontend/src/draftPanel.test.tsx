@@ -1,7 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { StudioApiError } from "./api";
-import { claimDisplayItems, draftCounterState, draftSaveErrorMessage } from "./main";
-import type { Draft } from "./api";
+import { DraftPanel, draftCounterState, draftSaveErrorMessage } from "./main";
+import type { Draft, DraftVersion } from "./api";
+
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 describe("DraftPanel state helpers", () => {
   it("uses the displayed version for the counter and copy limit", () => {
@@ -15,48 +18,39 @@ describe("DraftPanel state helpers", () => {
   });
 });
 
-describe("DraftPanel claim support display", () => {
-  const links = new Map([
-    ["s-a", { url: "https://news.test/a", title: "Article A" }],
-  ]);
-
-  function draftWith(claims: Draft["claim_support"]): Draft {
-    return {
-      claim_support: claims,
-    } as Draft;
-  }
-
-  it("marks verified claims and resolves their source links", () => {
-    const items = claimDisplayItems(
-      draftWith([{
-        claim: "Company A raised funds.",
-        source_ids: ["s-a"],
-        passage: "raised funds",
-        verified: true,
-      }]),
-      links,
-    );
-    expect(items).toHaveLength(1);
-    expect(items[0].verified).toBe(true);
-    expect(items[0].passage).toBe("raised funds");
-    expect(items[0].links).toEqual([{ id: "s-a", url: "https://news.test/a", title: "Article A" }]);
-  });
-
-  it("flags unverified claims and drops unknown source links", () => {
-    const items = claimDisplayItems(
-      draftWith([
-        { claim: "Edited claim.", source_ids: ["s-a"], verified: false },
-        { claim: "Ghost claim.", source_ids: ["ghost"], verified: false },
-      ]),
-      links,
-    );
-    expect(items.map((item) => item.verified)).toEqual([false, false]);
-    expect(items[0].links).toHaveLength(1);
-    expect(items[1].links).toEqual([]);
-  });
-
-  it("renders nothing without claims", () => {
-    expect(claimDisplayItems(draftWith([]), links)).toEqual([]);
-    expect(claimDisplayItems(null, links)).toEqual([]);
-  });
+it("saves links as a new version and reads the older title/body/links without saving", async () => {
+  let draft = { id: "draft", conversation_id: "chat", channel_id: 1, working_title: "Original",
+    body: "Original body", source_links: ["https://example.test/a"], media_ids: [],
+    revision: 1, current_version: 1, character_count: 13 } as unknown as Draft;
+  const versions: DraftVersion[] = [{ id: 1, draft_id: "draft", version: 1,
+    working_title: "Original", body: "Original body", source_links: ["https://example.test/a"], media_ids: [],
+    origin: "generated", instruction: "", character_count: 13, created_at: null }];
+  const saves: Record<string, unknown>[] = [];
+  vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+    let data;
+    if (init?.method === "PATCH") {
+      const payload = JSON.parse(String(init.body)); saves.push(payload);
+      draft = { ...draft, ...payload, revision: 2, current_version: 2 };
+      versions.push({ ...versions[0], id: 2, version: 2, working_title: draft.working_title, source_links: draft.source_links });
+      data = { draft };
+    } else if (url.includes("/versions")) data = { versions };
+    else if (url.includes("/media")) data = { media: [] };
+    else data = { draft };
+    return new Response(JSON.stringify(data), { headers: { "content-type": "application/json" } });
+  }));
+  render(<DraftPanel conversationId="chat" seedDraft={draft} open onClose={() => {}}
+    onSelectConversation={() => {}} watchForAgentChanges={false} refreshToken={0} />);
+  await waitFor(() => expect(screen.getByLabelText("Draft version").querySelectorAll("option")).toHaveLength(1));
+  fireEvent.change(screen.getByLabelText("Artifact title"), { target: { value: "Updated" } });
+  fireEvent.change(screen.getByLabelText("Source links"), { target: { value: "https://example.test/b" } });
+  fireEvent.click(screen.getByRole("button", { name: /^Save$/ }));
+  await waitFor(() => expect(screen.getByLabelText("Draft version").querySelectorAll("option")).toHaveLength(2));
+  expect(saves).toEqual([expect.objectContaining({ expected_revision: 1, working_title: "Updated",
+    source_links: ["https://example.test/b"], save_as_new_version: true })]);
+  fireEvent.change(screen.getByLabelText("Draft version"), { target: { value: "1" } });
+  expect((screen.getByLabelText("Artifact title") as HTMLInputElement).value).toBe("Original");
+  expect((screen.getByLabelText("Source links") as HTMLTextAreaElement).value).toBe("https://example.test/a");
+  expect(screen.getByText("Original body")).toBeTruthy();
+  expect((screen.getByLabelText("Source links") as HTMLTextAreaElement).readOnly).toBe(true);
+  expect(saves).toHaveLength(1);
 });

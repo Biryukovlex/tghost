@@ -118,8 +118,8 @@ async def test_agent_supplied_ids_cannot_cross_conversation_or_channel_scope():
     ctx = SimpleNamespace(deps=deps)
     agent = build_agent(Settings(studio_test_mode=True))
 
-    save = agent._function_toolset.tools["save_draft"].function
-    blocked_draft = await save(ctx, str(foreign_draft["id"]), 1, "Overwrite attempt")
+    save = agent._function_toolset.tools["edit_draft"].function
+    blocked_draft = await save(ctx, expected_revision=1, body="Overwrite attempt")
     assert blocked_draft["status"] == "blocked"
     unchanged = await repository.get_draft(foreign_draft["id"])
     assert unchanged and unchanged["body"] == "Foreign creative draft"

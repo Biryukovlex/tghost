@@ -44,6 +44,8 @@ export type Draft = {
   story_cluster_id?: string | null;
   analysis_id?: string | null;
   working_title: string;
+  title?: string;
+  source_links?: string[];
   body: string;
   body_html?: string;
   body_plain?: string;
@@ -77,6 +79,9 @@ export type DraftVersion = {
   draft_id: string;
   version: number;
   body: string;
+  working_title?: string | null;
+  title?: string | null;
+  source_links?: string[] | null;
   origin: "generated" | "regenerated" | "user_edit" | string;
   instruction: string;
   character_count: number;

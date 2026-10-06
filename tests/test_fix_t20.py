@@ -72,15 +72,15 @@ async def test_patch_route_choose_and_save_modes(client, app, settings, channel_
     did = draft["id"]
 
     saved = await client.patch(f"/studio/api/drafts/{did}", json={"expected_revision": draft["revision"], "body": "owner edit", "working_title": "T"}, headers=headers)
-    assert saved.status_code == 200 and saved.json()["draft"]["current_version"] == 1
+    assert saved.status_code == 200 and saved.json()["draft"]["current_version"] == 2
     appended = await client.patch(f"/studio/api/drafts/{did}", json={"expected_revision": saved.json()["draft"]["revision"], "body": "owner alt", "save_as_new_version": True}, headers=headers)
-    assert appended.status_code == 200 and appended.json()["draft"]["current_version"] == 2
+    assert appended.status_code == 200 and appended.json()["draft"]["current_version"] == 3
     chosen = await client.patch(f"/studio/api/drafts/{did}", json={"expected_revision": appended.json()["draft"]["revision"], "choose_version": 1}, headers=headers)
     assert chosen.status_code == 200
     body = chosen.json()["draft"]
-    assert body["current_version"] == 1 and body["body"] == "owner edit"
+    assert body["current_version"] == 1 and body["body"] == "agent v1"
     versions = await client.get(f"/studio/api/drafts/{did}/versions")
-    assert [v["version"] for v in versions.json()["versions"]] == [1, 2]
+    assert [v["version"] for v in versions.json()["versions"]] == [1, 2, 3]
     stale = await client.patch(f"/studio/api/drafts/{did}", json={"expected_revision": 1, "choose_version": 2}, headers=headers)
     assert stale.status_code == 409 and "server_draft" in stale.json()
 

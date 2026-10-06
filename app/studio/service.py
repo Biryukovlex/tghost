@@ -28,7 +28,7 @@ from pydantic_ai.ui import SSE_CONTENT_TYPE
 from starlette.responses import JSONResponse, StreamingResponse
 
 from .adapter import StudioAGUIAdapter as AGUIAdapter
-from .agent import StudioDeps, build_agent, is_revision_request, is_short_continuation_request, workflow_tool_sequence
+from .agent import StudioDeps, build_agent, is_short_continuation_request, workflow_tool_sequence
 from .. import limits
 from .analytics import analyze_posts_async
 from .profile import build_profile
@@ -621,29 +621,6 @@ class StudioService:
             return JSONResponse({"error": {"code": code, "message": message, "retryable": retryable}}, status_code=409)
         adapter = AGUIAdapter(agent=agent, run_input=run_input, accept=SSE_CONTENT_TYPE, manage_system_prompt="server")
         required_tools = workflow_tool_sequence(content, history=history_rows)
-        # A draft request that follows a completed research turn already has a
-        # conversation-scoped, persisted evidence bundle. Do not make the
-        # provider repeat retrieval unless fresh research was requested. Read
-        # current context first so the model receives persisted source IDs.
-        if "create_draft" in required_tools and "search_web" not in required_tools:
-            bundle = await self.research_service.get_bundle(
-                workspace_id=self.repository.workspace_id,
-                conversation_id=conversation_id,
-                channel_id=int(conversation["channel_id"]),
-            )
-            if bundle is not None and bundle.sources:
-                required_tools = ("get_channel_context", "create_draft")
-        current_draft = await self.repository.get_current_draft(
-            conversation_id=conversation_id,
-            channel_id=int(conversation["channel_id"]),
-        )
-        if "create_draft" in required_tools and current_draft is not None:
-            required_tools = tuple("revise_draft" if name == "create_draft" else name for name in required_tools)
-        # A conversation that already holds a draft treats any request to
-        # change the post ("add bold title and subtitles", "make it shorter")
-        # as a revision: the change must be saved, not described in chat.
-        if current_draft is not None and "revise_draft" not in required_tools and is_revision_request(content):
-            required_tools = tuple(name for name in required_tools if name != "create_draft") + ("get_draft", "revise_draft")
         # Retain completed assistant replies: stripping them makes old user
         # requests look unanswered. History is context, not factual evidence.
         server_history = _model_history(history_rows)
@@ -1034,7 +1011,7 @@ class StudioService:
                     )
                     usage["tool_calls"] = max(int(usage.get("tool_calls", 0)), observed_tool_calls)
                     artifact_ready = bool(
-                        {"create_draft", "revise_draft", "save_draft"}.intersection(deps.completed_tools)
+                        {"create_draft", "edit_draft"}.intersection(deps.completed_tools)
                     )
                     if artifact_ready:
                         failure_text = (
