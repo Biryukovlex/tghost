@@ -7,7 +7,10 @@ tests; it is never selected silently in a production configuration.
 
 from __future__ import annotations
 
+import asyncio
+from contextlib import asynccontextmanager
 
+from openai import APIError, APIStatusError
 from pydantic_ai import UnexpectedModelBehavior
 from pydantic_ai.models import Model
 from pydantic_ai.models.openai import OpenAIChatModel, OpenAIResponsesModel
@@ -85,8 +88,28 @@ class ChatGPTPlanModel(OpenAIResponsesModel):
                 raise UnexpectedModelBehavior("ChatGPT stream ended before response.completed")
         return await super()._process_streamed_response(verified_events(), model_settings, model_request_parameters, **kwargs)
 
-    def request_stream(self, messages, model_settings, model_request_parameters, *args, **kwargs):
-        return super().request_stream(messages, {**(model_settings or {}), "openai_store": False}, model_request_parameters, *args, **kwargs)
+    @asynccontextmanager
+    async def request_stream(self, messages, model_settings, model_request_parameters, *args, **kwargs):
+        from .observability import streaming_error_category
+
+        settings = {**(model_settings or {}), "openai_store": False}
+        for attempt in range(2):
+            delivered = False
+            try:
+                async with super().request_stream(messages, settings, model_request_parameters, *args, **kwargs) as response:
+                    delivered = True
+                    yield response
+                    return
+            except APIError as exc:
+                # The SDK retries HTTP failures, but not errors inside a 200
+                # SSE stream. Retry one transient startup failure only; once
+                # a response was exposed, a replay might duplicate tool work.
+                if (
+                    delivered or attempt or isinstance(exc, APIStatusError)
+                    or streaming_error_category(exc) not in {"provider_unavailable", "provider_rate_limited"}
+                ):
+                    raise
+                await asyncio.sleep(0.25)
 
 
 def provider_name(settings) -> str:

@@ -692,7 +692,7 @@ def build_agent(settings, *, model=None) -> Agent[StudioDeps, str]:
         if bundle is not None:
             context_payload["research_sources"] = [
                 {key: value for key, value in source.model_dump(mode="json").items()
-                 if key in {"source_id", "url", "title", "excerpt", "published_at", "retrieved_at", "warnings", "status", "accessible"}}
+                 if key in {"source_id", "url", "title", "excerpt", "published_at", "retrieved_at", "warnings", "status", "accessible", "has_read_content"}}
                 for source in sorted(bundle.sources, key=lambda item: item.retrieved_at, reverse=True)[:12]
             ]
         raw = {**raw, "studio_context": context_payload, "draft_context": draft_context}
@@ -1028,7 +1028,7 @@ def build_agent(settings, *, model=None) -> Agent[StudioDeps, str]:
         story_cluster_id: str | None = None,
         analysis_id: str | None = None,
     ) -> dict[str, Any]:
-        """Save the draft artifact. claim_support items must be {claim, source_ids}.
+        """Save the draft artifact. claim_support items are {claim, source_ids, passage}.
 
         Copy exact source_id values from get_channel_context/search/read results,
         never URLs or invented IDs. Use creative only for explicitly requested
@@ -1037,7 +1037,11 @@ def build_agent(settings, *, model=None) -> Agent[StudioDeps, str]:
         passage quoted from the fetched article text ({claim, source_ids,
         passage}); the server confirms the passage occurs in the stored read
         text and that the claim's numbers, dates and quoted phrases occur in
-        the passage. Mappings without a verifiable passage are rejected with
+        the passage. Write the evidence claim in the source's language, keeping
+        its exact names and numbers; the publication body can use another language.
+        Read snippet-only sources with read_sources before citing them. For
+        multiple sources, use passages={source_id: exact_quote} per source.
+        Mappings without a verifiable passage are rejected with
         an actionable error instead of being saved.
         """
 

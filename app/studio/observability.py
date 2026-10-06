@@ -16,6 +16,7 @@ from collections.abc import Mapping
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from openai import APIError, APIStatusError
 from pydantic import ValidationError
 from pydantic_ai.exceptions import ModelHTTPError
 
@@ -37,7 +38,7 @@ _ERRORS: dict[str, tuple[str, bool]] = {
     "provider_auth_failed": ("The model provider rejected the connection. Check or reconnect it in Settings → Studio.", False),
     "provider_payment_required": ("The model provider requires credits or plan access.", False),
     "provider_model_not_found": ("The configured model is not available on OpenRouter. Choose another model in Settings → Studio.", False),
-    "provider_bad_request": ("OpenRouter rejected the request. Check the model and Studio settings.", True),
+    "provider_bad_request": ("The model provider rejected the request. Check the model and Studio settings.", True),
     "provider_invalid_response": ("The model provider returned an invalid response. Try again.", True),
     "invalid_agent_output": ("The agent returned an invalid response. Try again.", True),
     "run_cancelled": ("Run cancelled by the user.", False),
@@ -155,6 +156,33 @@ def duration_ms(started_at: Any, finished_at: Any = None) -> int | None:
     return max(0, min(int(seconds * 1000), _MAX_COUNT))
 
 
+def streaming_error_category(exc: BaseException) -> str | None:
+    """Project OpenAI SSE errors without retaining their message or payload."""
+    if not isinstance(exc, APIError) or isinstance(exc, APIStatusError):
+        return None
+    body = getattr(exc, "body", None)
+    if not isinstance(body, Mapping):
+        return None
+    if isinstance(body.get("error"), Mapping):
+        body = body["error"]
+    categories = {
+        "server_error": "provider_unavailable",
+        "internal_server_error": "provider_unavailable",
+        "rate_limit_exceeded": "provider_rate_limited",
+        "rate_limit_error": "provider_rate_limited",
+        "authentication_error": "provider_auth_failed",
+        "invalid_api_key": "provider_auth_failed",
+        "insufficient_quota": "provider_payment_required",
+        "invalid_request_error": "provider_bad_request",
+        "context_length_exceeded": "provider_bad_request",
+    }
+    for field in ("code", "type"):
+        value = body.get(field)
+        if isinstance(value, str) and value in categories:
+            return categories[value]
+    return None
+
+
 def safe_error(exc: BaseException) -> tuple[str, str, bool]:
     """Classify an exception without retaining its message or payload."""
 
@@ -164,6 +192,10 @@ def safe_error(exc: BaseException) -> tuple[str, str, bool]:
         return "run_cancelled", _ERRORS["run_cancelled"][0], False
     if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
         return "provider_timeout", _ERRORS["provider_timeout"][0], True
+    category = streaming_error_category(exc)
+    if category:
+        message, retryable = _ERRORS[category]
+        return category, message, retryable
     name = exc.__class__.__name__.lower()
     text = name + " " + str(exc).lower()
     status_code = _status_code(exc, text)

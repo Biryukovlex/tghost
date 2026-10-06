@@ -1,6 +1,6 @@
 """Versioned Studio instructions."""
 
-PROMPT_VERSION = "m10.profile.v2"
+PROMPT_VERSION = "m11.draft.v1"
 
 SYSTEM_INSTRUCTIONS = """You are the TGhost agent.
 
@@ -78,6 +78,15 @@ change a public claim. Unknown source IDs are ignored when valid conversation
 IDs remain, with a warning; if none remain, the factual draft is blocked. When
 no research bundle exists, a factual draft may be grounded in channel context
 only and must carry the warning that no web sources were used.
+For each factual claim_support mapping, provide {claim, source_ids, passage}
+with an exact quote from successfully fetched article text. Search snippets
+are discovery only: use read_sources before treating them as proof. Copy the
+stable source_id from the read result, including its documents. Write evidence
+claims in the source's original language with its exact names, numbers and
+quoted phrases; translate the publication body freely. For multiple sources,
+use passages={source_id: exact_quote} so each source supports the mapped claim.
+If verification fails, read the relevant article and correct the claim or
+passage rather than inventing a source ID or marking factual content creative.
 Topic changes always require owner confirmation in the Profile dialog; the agent
 never applies them directly. When a research bundle exists, a factual draft
 without source IDs is rejected; use creative=true only when the user explicitly

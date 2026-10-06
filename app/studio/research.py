@@ -91,6 +91,7 @@ def _source_for_agent(source: SourceEvidence) -> dict[str, Any]:
         )
     } | {
         "excerpt": str(value.get("excerpt") or "")[:1_500],
+        "has_read_content": bool(source.content and source.accessible and source.status == "ok"),
         "search_relevance": dict((value.get("metadata") or {}).get("provenance") or {}),
         "source_role": str((value.get("metadata") or {}).get("source_role") or "editorial_or_official"),
     }
@@ -203,10 +204,26 @@ class ResearchService:
         recent_posts: Sequence[str] = (),
         channel_evidence_ids: Sequence[int] = (),
         channel_evidence: Sequence[dict[str, Any]] = (),
+        search_results: bool = False,
     ) -> ResearchBundle:
         async with self._lock:
             state = self._state(workspace_id, conversation_id, channel_id)
-            merged = list({source.source_id: source for source in [*state.sources.values(), *values]}.values())
+            stored = dict(state.sources)
+            by_url = {source.canonical_url: source for source in stored.values() if source.canonical_url}
+            for source in values:
+                previous = by_url.get(source.canonical_url) if source.canonical_url else None
+                if previous is not None:
+                    source = replace(source, source_id=previous.source_id)
+                    # Rediscovery is not a new article read. Keep the actual
+                    # fetched text and its retrieval time for verification.
+                    # Explicit rereads (including failed ones) still replace it.
+                    if search_results and previous.content and previous.accessible and previous.status == "ok":
+                        source = previous
+                stored.pop(source.source_id, None)
+                stored[source.source_id] = source
+                if source.canonical_url:
+                    by_url[source.canonical_url] = source
+            merged = list(stored.values())
             max_sources = int(getattr(self.settings, "studio_research_max_sources", 300) or 300)
             max_sources = max(12, min(max_sources, 1000))
             if len(merged) > max_sources:
@@ -222,6 +239,9 @@ class ResearchService:
                 channel_evidence=channel_evidence,
                 scorer=self.scorer,
             )
+            # Story clustering may deduplicate copies by title/hash. The
+            # evidence registry must retain every returned source ID/URL.
+            state.bundle = replace(state.bundle, sources=tuple(merged))
             bundle = state.bundle
         persist = getattr(self.repository, "persist_research_bundle", None)
         if persist is not None:
@@ -427,6 +447,9 @@ class ResearchService:
         query = _clean_instruction(query, 500)
         if not query:
             raise ValueError("research query must not be empty")
+        await self._ensure_loaded(
+            workspace_id=workspace_id, conversation_id=conversation_id, channel_id=channel_id,
+        )
         queries = list(
             dict.fromkeys(
                 candidate
@@ -464,6 +487,7 @@ class ResearchService:
             recent_posts=recent_posts,
             channel_evidence_ids=channel_evidence_ids,
             channel_evidence=channel_evidence,
+            search_results=True,
         )
         activity = await self._record_activity(
             workspace_id=workspace_id,
@@ -483,7 +507,11 @@ class ResearchService:
         # the deterministic clusters and source links to the tool result.
         # Return this batch, not a ranked subset of the conversation archive.
         # The model decides relevance, credibility and domain diversity.
-        selected = list({source.source_id: source for source in values}.values())
+        by_url = {source.canonical_url: source for source in bundle.sources if source.canonical_url}
+        selected = list({
+            source.source_id: source for source in
+            (by_url.get(source.canonical_url, source) for source in values)
+        }.values())
         selected_ids = {source.source_id for source in selected}
         stories = [story for story in bundle.stories if selected_ids.intersection(story.source_ids)][:8]
         response_bundle = {
@@ -583,11 +611,15 @@ class ResearchService:
             degraded=any(not document.accessible for document in documents),
             trace_id=str(uuid.uuid4()),
         )
-        selected = values
+        by_url = {source.canonical_url: source for source in bundle.sources if source.canonical_url}
+        selected = [by_url.get(source.canonical_url, source) for source in values]
         selected_ids = {source.source_id for source in selected}
         stories = [story for story in bundle.stories if selected_ids.intersection(story.source_ids)][:8]
         return {
-            "documents": [_document_for_agent(document) for document in documents],
+            "documents": [
+                {**_document_for_agent(document), "source_id": source.source_id}
+                for document, source in zip(documents, selected)
+            ],
             "sources": [_source_for_agent(source) for source in selected],
             "stories": [_story_for_agent(story) for story in stories],
             "warnings": list(bundle.warnings),
@@ -682,6 +714,9 @@ class ResearchService:
         domains: Sequence[str] = (),
     ) -> dict[str, Any]:
         requested = _clean_instruction(instruction, 500)
+        await self._ensure_loaded(
+            workspace_id=workspace_id, conversation_id=conversation_id, channel_id=channel_id,
+        )
         base_topics = [topic for topic in _topic_names(topics) if topic]
         queries: list[str] = [requested] if requested else []
         queries.extend(base_topics)
@@ -711,8 +746,13 @@ class ResearchService:
             recent_posts=recent_posts,
             channel_evidence_ids=channel_evidence_ids,
             channel_evidence=channel_evidence,
+            search_results=True,
         )
-        selected = list({source.source_id: source for source in values}.values())
+        by_url = {source.canonical_url: source for source in bundle.sources if source.canonical_url}
+        selected = list({
+            source.source_id: source for source in
+            (by_url.get(source.canonical_url, source) for source in values)
+        }.values())
         selected_ids = {source.source_id for source in selected}
         selected_stories = [story for story in bundle.stories if selected_ids.intersection(story.source_ids)][:6]
         suggestions = []
