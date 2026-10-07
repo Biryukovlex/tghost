@@ -207,6 +207,40 @@ class Snapshot(Base):
     )
 
 
+class PostViewHorizon(Base):
+    __tablename__ = "post_view_horizons"
+    workspace_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    post_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    horizon_hours: Mapped[int] = mapped_column(Integer, primary_key=True)
+    taken_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    views: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    __table_args__ = (
+        ForeignKeyConstraint(["workspace_id", "post_id"], ["posts.workspace_id", "posts.id"], ondelete="CASCADE"),
+        CheckConstraint("horizon_hours IN (24,48,72)"), CheckConstraint("views >= 0"),
+    )
+
+
+class ChannelMetricObservation(Base):
+    __tablename__ = "channel_metric_observations"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    channel_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    taken_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    subscribers: Mapped[int | None] = mapped_column(BigInteger)
+    subscribers_observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    views24: Mapped[float | None] = mapped_column(Float)
+    views48: Mapped[float | None] = mapped_column(Float)
+    views72: Mapped[float | None] = mapped_column(Float)
+    er: Mapped[float | None] = mapped_column(Float)
+    err: Mapped[float | None] = mapped_column(Float)
+    coverage: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default=sql_text("'{}'::jsonb"))
+    __table_args__ = (
+        ForeignKeyConstraint(["workspace_id", "channel_id"], ["channels.workspace_id", "channels.id"], ondelete="CASCADE"),
+        CheckConstraint("subscribers >= 0"),
+        Index("ix_channel_metrics_workspace_channel_time", "workspace_id", "channel_id", "taken_at"),
+    )
+
+
 class Comment(Base):
     __tablename__ = "comments"
 

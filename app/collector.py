@@ -17,9 +17,11 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 from telethon import TelegramClient, errors
+from telethon.tl.functions.channels import GetFullChannelRequest
 
 from . import limits
 from .config import Settings
+from .channel_metrics import eligible_horizons
 from .postgres_db import PostgresDatabase
 from .workspace_settings import RuntimeSettings
 from .telegram_formatting import serialize_entities
@@ -220,6 +222,17 @@ class Collector:
         """Scan one channel. Return post, snapshot, and comment collection counts."""
 
         entity = await self.resolve_entity(ch["identifier"])
+        subscribers = None
+        if getattr(self.db, "capture_channel_metrics", None) is not None:
+            try:
+                full = await self.client(GetFullChannelRequest(entity))
+                count = getattr(full.full_chat, "participants_count", None)
+                if count is not None and int(count) >= 0:
+                    subscribers = int(count)
+            except errors.FloodWaitError:
+                raise
+            except Exception as exc:
+                log.warning("subscriber observation unavailable for channel %s: %s", ch["id"], type(exc).__name__)
         cutoff = None
         is_full_scan = False
         if self.settings.track_days > 0:
@@ -292,6 +305,12 @@ class Collector:
             views, comments, reactions, shares = extract_metrics(msg)
             if await (self.db.add_snapshot_if_changed(post_id, views, comments, reactions, shares)):
                 written += 1
+            horizon_writer = getattr(self.db, "record_post_horizon_views", None)
+            if horizon_writer is not None and eligible_horizons(msg_date, utcnow()):
+                try:
+                    await horizon_writer(post_id, getattr(msg, "views", None))
+                except Exception as exc:
+                    log.warning("fixed-age observation failed for post %s: %s", post_id, type(exc).__name__)
             should_fetch = False
             if comments > 0:
                 should_fetch = True
@@ -320,6 +339,25 @@ class Collector:
                     comment_errors += 1
                     log.warning("comment sync failed for post %s (%s): %s", post_id, msg.id, type(exc).__name__)
                     continue
+        # Recent-only scans do not visit 24/48/72-hour-old messages. Fetch due IDs explicitly.
+        pending = getattr(self.db, "pending_view_horizons", None)
+        if pending is not None:
+            try:
+                due = await pending(ch["id"])
+                for start in range(0, len(due), 100):
+                    batch = due[start:start + 100]
+                    by_message = {row["message_id"]:row["id"] for row in batch}
+                    messages = await self.client.get_messages(entity, ids=list(by_message))
+                    for message in messages:
+                        if message is None or getattr(message, "id", None) not in by_message:
+                            continue
+                        post_id = by_message[message.id]
+                        await self.db.record_post_horizon_views(post_id, getattr(message, "views", None))
+                        await self.db.add_snapshot_if_changed(post_id, *extract_metrics(message))
+            except errors.FloodWaitError:
+                raise
+            except Exception as exc:
+                log.warning("due view observations failed for channel %s: %s", ch["id"], type(exc).__name__)
         if is_full_scan:
             self._last_full_scan[ch["id"]] = datetime.now(timezone.utc)
         if seen_message_ids:
@@ -338,6 +376,12 @@ class Collector:
                     )
                 except Exception:
                     log.warning("post retirement failed for channel %s", ch["identifier"])
+        capture = getattr(self.db, "capture_channel_metrics", None)
+        if capture is not None:
+            try:
+                await capture(ch["id"], subscribers)
+            except Exception as exc:
+                log.warning("channel metrics observation failed for channel %s: %s", ch["id"], type(exc).__name__)
         return seen, written, comments_seen, comments_written, comments_deleted, comment_errors
 
     async def poll_all(self, reason: str = "scheduled") -> dict[str, Any]:

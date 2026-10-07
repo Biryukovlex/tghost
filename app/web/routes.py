@@ -25,6 +25,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
 from ..collector import Collector
+from ..channel_metrics import empty_metrics
 from ..config import Settings
 from ..postgres_db import cohort_bounds
 from ..workspace_settings import RuntimeSettings
@@ -561,6 +562,8 @@ def create_app(collector: Collector, settings: Settings | RuntimeSettings, works
         first_page_link = max(1, min(current_page - 2, total_pages - 4))
         last_page_link = min(total_pages, first_page_link + 4)
         page_numbers = list(range(first_page_link, last_page_link + 1))
+        metrics_reader = getattr(db, "channel_metrics", None)
+        cm = await metrics_reader(channel_id, from_param, to_param) if metrics_reader is not None else empty_metrics()
         chart = {
             "labels": ts["days"],
             "views": ts["views"],
@@ -584,6 +587,7 @@ def create_app(collector: Collector, settings: Settings | RuntimeSettings, works
                     "collected_comments": int(k.get("collected_comments", 0) or 0),
                     "last_poll": str(k.get("last_poll") or "") or None,
                 },
+                "channel_metrics": cm,
                 "chart": chart,
                 "pagination": {
                     "page": current_page,
@@ -610,6 +614,7 @@ def create_app(collector: Collector, settings: Settings | RuntimeSettings, works
             "first_row": first_row,
             "last_row": last_row,
             "has_next": has_next,
+            "channel_metrics": cm,
             "chart": chart,
         })
 
@@ -652,6 +657,8 @@ def create_app(collector: Collector, settings: Settings | RuntimeSettings, works
                 raise
         except ValueError as exc:
             return _json_error("invalid_date", str(exc), 422)
+        metrics_reader = getattr(db, "channel_metrics", None)
+        cm = await metrics_reader(channel_id, from_param, to_param) if metrics_reader is not None else empty_metrics()
         return {
             "channel_id": channel_id,
             "from": from_param,
@@ -665,6 +672,7 @@ def create_app(collector: Collector, settings: Settings | RuntimeSettings, works
                 "collected_comments": int(k.get("collected_comments", 0) or 0),
                 "last_poll": str(k.get("last_poll") or "") or None,
             },
+            "channel_metrics": cm,
             "series": {
                 "days": ts["days"],
                 "views": ts["views"],

@@ -18,6 +18,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
 from . import limits
+from .channel_metrics_repository import ChannelMetricsRepository
 from .db_session import DatabaseSessionManager, normalize_database_url
 from .telegram_formatting import normalize_entities
 from .web.links import normalize_channel_identifier
@@ -82,7 +83,7 @@ def cohort_bounds(from_date: Any, to_date: Any) -> tuple[datetime | None, dateti
     return start, end_exclusive
 
 
-class PostgresDatabase:
+class PostgresDatabase(ChannelMetricsRepository):
     """Async PostgreSQL repository with an explicit workspace boundary."""
 
     def __init__(

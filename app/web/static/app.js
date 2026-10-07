@@ -643,6 +643,10 @@
   if (trendCanvas && typeof window.Chart !== 'undefined') {
     const data = parseChartData(trendCanvas);
     if (data && Array.isArray(data.labels)) {
+      const channelRoot = document.querySelector('[data-channel-metrics]');
+      const channelMetrics = channelRoot ? JSON.parse(channelRoot.dataset.channelMetrics) : null;
+      const channelKeys = ['subscribers','views24','views48','views72','er','err'];
+      const isChannelMetric = () => channelKeys.includes(state.metric);
       const motionOK = !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
       const styles = getComputedStyle(document.documentElement);
       const chartColors = {
@@ -650,6 +654,7 @@
         reactions: styles.getPropertyValue('--coral').trim() || '#ff716a',
         comments: styles.getPropertyValue('--teal').trim() || '#24d4b8',
         shares: styles.getPropertyValue('--blue').trim() || '#5b91ff',
+        subscribers: '#82aaff', views24: '#19d2ec', views48: '#36bfd8', views72: '#60abbf', er: '#ff9c93', err: '#6ee7dd',
         muted: styles.getPropertyValue('--muted').trim(),
         grid: styles.getPropertyValue('--chart-grid').trim(),
       };
@@ -659,9 +664,10 @@
         comments: 'rgba(36, 212, 184, .10)',
         shares: 'rgba(91, 145, 255, .10)',
       };
-      const chartMetricNames = { views: 'Views', reactions: 'Reactions', comments: 'Comments', shares: 'Shares' };
+      const chartMetricNames = { subscribers: 'Subscribers', views24: 'Typical 24-hour views', views48: 'Typical 48-hour views', views72: 'Typical 72-hour views', er: 'ER', err: 'ERR', views: 'Views', reactions: 'Reactions', comments: 'Comments', shares: 'Shares' };
       const scopeLabel = trendCanvas.dataset.chartScope || '';
-      const number = (value) => format.format(Number(value) || 0);
+      const observationScope = trendCanvas.dataset.observationScope || 'Selected dates';
+      const number = (value) => value == null ? 'Unavailable' : ['er','err'].includes(state.metric) ? `${Number(value).toFixed(state.metric === 'er' ? 2 : 1)}%` : format.format(Number(value) || 0);
       const dayLabel = (iso) => {
         const date = new Date(`${iso}T00:00:00Z`);
         if (Number.isNaN(date.getTime())) return iso;
@@ -680,6 +686,19 @@
       }
 
       function bucketed() {
+        if (isChannelMetric()) {
+          const series = channelMetrics?.series || { labels: [] };
+          const buckets = new Map();
+          series.labels.forEach((label,index) => {
+            if (state.period !== 'day' && series.observed?.[index] === false) return;
+            let key=label, text=dayLabel(label);
+            if (state.period === 'month') {key=label.slice(0,7);text=monthLabel(key);}
+            else if (state.period === 'week') {const date=new Date(`${label}T00:00:00Z`);date.setUTCDate(date.getUTCDate()-((date.getUTCDay()+6)%7));key=date.toISOString().slice(0,10);text=`Week of ${dayLabel(key)}`;}
+            const raw=series[state.metric]?.[index];
+            buckets.set(key,{label:text,value:raw == null ? null : Number(raw)});
+          });
+          return {labels:[...buckets.values()].map(p=>p.label),values:[...buckets.values()].map(p=>p.value)};
+        }
         const daily = (Array.isArray(data[state.metric]) ? data[state.metric] : []).map((v) => Math.max(0, Number(v) || 0));
         const running = [];
         let total = 0;
@@ -718,7 +737,7 @@
       const prevButton = document.querySelector('[data-chart-prev]');
       const nextButton = document.querySelector('[data-chart-next]');
       let trendChart = null;
-      if (data.labels.length > 0) {
+      if (data.labels.length > 0 || channelMetrics?.series?.labels?.length > 0) {
         trendChart = new window.Chart(trendCanvas, {
           type: 'line',
           data: { labels: [], datasets: [{ label: chartMetricNames[state.metric], data: [], borderColor: chartColors[state.metric], backgroundColor: chartFills[state.metric], fill: true, cubicInterpolationMode: 'monotone', borderWidth: 2.5, pointRadius: 2, pointHoverRadius: 6 }] },
@@ -748,18 +767,33 @@
         const points = currentPoints();
         state.point = points.length === 0 ? 0 : Math.min(state.point, points.length - 1);
         const metricName = chartMetricNames[state.metric];
-        const modeSuffix = state.mode === 'cumulative' ? ' (cumulative in window)' : '';
+        const modeSuffix = !isChannelMetric() && state.mode === 'cumulative' ? ' (cumulative in window)' : '';
+        const legacyMode = document.querySelector('[data-legacy-chart-mode]');
+        if (legacyMode) legacyMode.hidden = isChannelMetric();
+        const title = document.querySelector('[data-trend-title]');
+        if (title) title.textContent = isChannelMetric() ? 'Channel trends' : 'Post performance';
+        const scope = document.querySelector('[data-trend-scope]');
+        if (scope) scope.textContent = isChannelMetric() ? `Recorded observations · ${observationScope} (UTC). Current channel cards stay current.` : `Latest known totals grouped by publication date · UTC. ${scopeLabel}.`;
+        document.querySelectorAll('[data-channel-metric]').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.channelMetric === state.metric)));
+        if (/^views(24|48|72)$/.test(state.metric)) setHorizon(state.metric.slice(5));
         if (trendChart) {
+          trendChart.options.scales.y.beginAtZero = !isChannelMetric();
+          trendChart.options.scales.y.suggestedMin = isChannelMetric() ? undefined : 0;
+          trendChart.options.scales.y.ticks.callback = value => number(value);
+          trendChart.options.plugins.tooltip.callbacks = { label: context => `${chartMetricNames[state.metric]}: ${number(context.parsed.y)}` };
           trendChart.data.labels = points.map((p) => p.label);
           trendChart.data.datasets[0].label = `${metricName}${modeSuffix}`;
           trendChart.data.datasets[0].data = points.map((p) => p.value);
           trendChart.data.datasets[0].borderColor = chartColors[state.metric];
-          trendChart.data.datasets[0].backgroundColor = chartFills[state.metric];
+          trendChart.data.datasets[0].backgroundColor = chartFills[state.metric] || `${chartColors[state.metric]}18`;
           trendChart.update(motionOK ? undefined : 'none');
         }
         if (summary) {
           if (points.length === 0) {
-            summary.textContent = `${metricName} · ${scopeLabel}: no posts in this window.`;
+            summary.textContent = isChannelMetric() ? `${metricName} · ${observationScope}: no observations in this window.` : `${metricName} · ${scopeLabel}: no posts in this window.`;
+          } else if (isChannelMetric()) {
+            const latest = points[points.length - 1];
+            summary.textContent = `${metricName} · recorded observations: ${points.length} points, latest ${number(latest.value)} on ${latest.label}.`;
           } else {
             const total = points.reduce((sum, p) => sum + p.value, 0);
             const shown = state.mode === 'cumulative'
@@ -781,13 +815,13 @@
         if (!readout) return;
         if (points.length === 0) {
           readout.textContent = 'No chart points in this window.';
-          trendCanvas.setAttribute('aria-label', 'Empty performance chart. No posts in this window.');
+          trendCanvas.setAttribute('aria-label', isChannelMetric() ? 'Empty channel chart. No observations in this window.' : 'Empty performance chart. No posts in this window.');
           return;
         }
         const point = points[state.point];
         const metricName = chartMetricNames[state.metric];
-        const modeSuffix = state.mode === 'cumulative' ? ', cumulative in window' : '';
-        readout.textContent = `${point.label}: ${number(point.value)} ${state.metric}${modeSuffix} (point ${state.point + 1} of ${points.length}).`;
+        const modeSuffix = !isChannelMetric() && state.mode === 'cumulative' ? ', cumulative in window' : '';
+        readout.textContent = `${point.label}: ${number(point.value)} ${metricName}${modeSuffix} (point ${state.point + 1} of ${points.length}).`;
         trendCanvas.setAttribute('aria-label', `Performance chart, ${metricName}. Current point: ${readout.textContent}`);
         if (trendChart) {
           try {
@@ -805,6 +839,37 @@
         });
       }
 
+      function cardValue(key,value) {
+        return value == null ? '—' : ['er','err'].includes(key) ? `${Number(value).toFixed(key==='er'?2:1)}%` : format.format(Math.round(value));
+      }
+      function setHorizon(age) {
+        const key=`views${age}`, value=channelMetrics?.current?.[key];
+        document.querySelectorAll('[data-views-horizon]').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.viewsHorizon===String(age))));
+        const valueButton=document.querySelector('.typical-stat-value');
+        if (valueButton) {valueButton.dataset.channelMetric=key;valueButton.setAttribute('aria-label',`Explore Typical ${age}-hour views`);valueButton.setAttribute('aria-pressed',String(state.metric===key));}
+        const field=document.querySelector('[data-typical-value]');if(field)field.textContent=cardValue(key,value);
+        const detail=document.querySelector('[data-typical-detail]');if(detail)detail.textContent=`At ${age} hours · avg per post`;
+        const coverage=channelMetrics?.coverage?.[key];
+        const coverageField=document.querySelector('[data-typical-coverage]');
+        if(coverageField)coverageField.textContent=coverage ? `${coverage.measured} / ${coverage.eligible} eligible posts measured · last 30 days` : 'No fixed-age observations yet';
+        const delta=document.querySelector('.typical-stat-value [data-cm-delta]');if(delta){delta.dataset.cmDelta=key;renderDelta(delta);}
+      }
+      function renderDelta(field) {
+        const key=field.dataset.cmDelta, value=channelMetrics?.current?.[key], before=channelMetrics?.previous?.[key];
+        if(value == null || before == null) {field.textContent='History building';return;}
+        const change=value-before, sign=change>=0?'+':'';
+        const text=['er','err'].includes(key) ? `${sign}${change.toFixed(key==='er'?2:1)} pp` : key==='subscribers' ? `${sign}${format.format(change)}` : before>0 ? `${sign}${(change/before*100).toFixed(1)}%` : null;
+        field.textContent=text ? `${text} vs 30 days ago` : 'History building';
+      }
+      document.querySelectorAll('[data-cm-delta]').forEach(renderDelta);
+      setHorizon('24');
+      function selectMetric(key) { if(!metricSelect || ![...metricSelect.options].some(o=>o.value===key))return;metricSelect.value=key;metricSelect.dispatchEvent(new Event('change',{bubbles:true})); }
+      document.querySelectorAll('[data-channel-metric]').forEach(button=>button.addEventListener('click',()=>selectMetric(button.dataset.channelMetric)));
+      document.querySelectorAll('[data-views-horizon]').forEach(button=>button.addEventListener('click',()=>selectMetric(`views${button.dataset.viewsHorizon}`)));
+      const definitions=document.querySelector('[data-metric-definitions]');
+      document.querySelector('[data-metric-definitions-open]')?.addEventListener('click',()=>definitions?.showModal());
+      document.querySelector('[data-metric-definitions-close]')?.addEventListener('click',()=>definitions?.close());
+      definitions?.addEventListener('click',event=>{if(event.target===definitions)definitions.close();});
       if (metricSelect) {
         metricSelect.addEventListener('change', () => {
           if (chartMetricNames[metricSelect.value]) {

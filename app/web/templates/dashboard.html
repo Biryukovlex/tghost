@@ -76,45 +76,69 @@
 </section>
 {% endif %}
 
-<section class="metrics-grid" aria-label="Channel totals">
-  <article class="metric-card metric-reach" data-reveal>
+{% macro channel_value(metric) -%}
+{% set value = channel_metrics.current[metric] %}
+{% if value is none %}—{% elif metric == 'er' %}{{ '%.2f'|format(value) }}%{% elif metric == 'err' %}{{ '%.1f'|format(value) }}%{% else %}{{ value|num }}{% endif %}
+{%- endmacro %}
+<section class="channel-statistics" aria-label="Current channel statistics" data-channel-metrics='{{ channel_metrics|tojson }}'>
+  <div class="statistics-heading"><h2>Channel statistics</h2><p>{{ 'Current values · observation history' if current_channel else 'Select a channel for current statistics' }}</p></div>
+  <div class="channel-stat-grid">
+    <button type="button" class="channel-stat-card" data-channel-metric="subscribers" aria-label="Explore Subscribers" aria-pressed="false" {% if not current_channel %}disabled{% endif %}>
+      <span class="channel-stat-label">Subscribers <i class="mgc mgc-arrow-right-up-core-regular" aria-hidden="true"></i></span>
+      <strong>{{ channel_value('subscribers') }}</strong><span class="channel-stat-detail">Latest subscriber count</span>
+      <span class="channel-stat-delta" data-cm-delta="subscribers">History building</span>
+    </button>
+    <article class="channel-stat-card typical-stat" data-typical-card>
+      <div class="typical-stat-header"><span class="channel-stat-label">Typical views</span><div class="horizon-switch" role="group" aria-label="Typical views horizon">{% for age in [24,48,72] %}<button type="button" data-views-horizon="{{ age }}" aria-label="Typical views at {{ age }} hours" aria-pressed="{{ 'true' if age == 24 else 'false' }}" {% if not current_channel %}disabled{% endif %}>{{ age }}h</button>{% endfor %}</div></div>
+      <button type="button" class="typical-stat-value" data-channel-metric="views24" aria-label="Explore Typical 24-hour views" aria-pressed="false" {% if not current_channel %}disabled{% endif %}><strong data-typical-value>{{ channel_value('views24') }}</strong><span class="channel-stat-detail" data-typical-detail>At 24 hours · avg per post</span><span class="channel-stat-delta" data-cm-delta="views24">History building</span></button>
+      <span class="sample-coverage" data-typical-coverage>Measurements start with collection</span>
+    </article>
+    {% for metric, label, detail in [('er','ER','Interactions ÷ views · last 30 days'),('err','ERR','Avg post views ÷ subscribers · last 30 days')] %}
+    <button type="button" class="channel-stat-card" data-channel-metric="{{ metric }}" aria-label="Explore {{ label }}" aria-pressed="false" {% if not current_channel %}disabled{% endif %}><span class="channel-stat-label">{{ label }} <i class="mgc mgc-arrow-right-up-core-regular" aria-hidden="true"></i></span><strong>{{ channel_value(metric) }}</strong><span class="channel-stat-detail">{{ detail }}</span><span class="channel-stat-delta" data-cm-delta="{{ metric }}">History building</span></button>
+    {% endfor %}
+  </div>
+  <div class="channel-stat-meta"><span>{% if channel_metrics.observed_at %}Last observation: {{ channel_metrics.observed_at|dt }} UTC{% else %}No channel observations yet{% endif %}{% if channel_metrics.subscribers_observed_at %} · Subscribers observed: {{ channel_metrics.subscribers_observed_at|dt }} UTC{% endif %}</span><button type="button" class="link-btn" data-metric-definitions-open>How metrics are calculated</button></div>
+</section>
+<div class="statistics-heading post-stat-heading"><h2>Post totals</h2><p>Selected dates · daily or cumulative plot</p></div>
+<section class="metrics-grid channel-post-totals" aria-label="Post totals">
+  <article class="metric-card metric-reach" data-reveal><button type="button" class="legacy-metric-select" data-channel-metric="views" aria-label="Explore Views" aria-pressed="false">
     <div>
       <div class="metric-label">Views · selected dates</div>
       <div class="metric-value">{{ k.views|num }}</div>
       <div class="metric-context">{{ k.posts|num }} posts · latest known totals</div>
     </div>
-  </article>
-  <article class="metric-card metric-reactions" data-reveal>
+  </button></article>
+  <article class="metric-card metric-reactions" data-reveal><button type="button" class="legacy-metric-select" data-channel-metric="reactions" aria-label="Explore Reactions" aria-pressed="false">
     <div>
       <div class="metric-label">Reactions · selected dates</div>
       <div class="metric-value">{{ k.reactions|num }}</div>
 
       <div class="metric-context">{{ k.posts|num }} posts · latest known totals</div>
     </div>
-  </article>
-  <article class="metric-card metric-comments" data-reveal>
+  </button></article>
+  <article class="metric-card metric-comments" data-reveal><button type="button" class="legacy-metric-select" data-channel-metric="comments" aria-label="Explore Comments" aria-pressed="false">
     <div>
       <div class="metric-label">Comments · selected dates</div>
       <div class="metric-value">{{ k.comments|num }}</div>
 
       <div class="metric-context">{{ k.posts|num }} posts · latest known totals</div>
     </div>
-  </article>
-  <article class="metric-card metric-shares" data-reveal>
+  </button></article>
+  <article class="metric-card metric-shares" data-reveal><button type="button" class="legacy-metric-select" data-channel-metric="shares" aria-label="Explore Shares" aria-pressed="false">
     <div>
       <div class="metric-label">Shares · selected dates</div>
       <div class="metric-value">{{ k.shares|num }}</div>
 
       <div class="metric-context">{{ k.posts|num }} posts · latest known totals</div>
     </div>
-  </article>
+  </button></article>
 </section>
 
 <section class="panel chart-panel" id="performance" data-reveal>
   <div class="panel-heading">
     <div>
-      <h2>Post performance</h2>
-      <p class="scope-note">Latest known totals grouped by publication date · UTC. {{ scope_label }}.</p>
+      <h2 data-trend-title>Post performance</h2>
+      <p class="scope-note" data-trend-scope>Latest known totals grouped by publication date · UTC. {{ scope_label }}.</p>
     </div>
   </div>
   <div class="chart-controls" role="group" aria-label="Chart controls">
@@ -122,6 +146,7 @@
       <span>Metric</span>
       <span class="select-shell">
         <select data-ui-dropdown id="chartMetric" aria-label="Chart metric">
+          {% if current_channel %}<optgroup label="Channel observations"><option value="subscribers">Subscribers</option><option value="views24">Typical 24-hour views</option><option value="views48">Typical 48-hour views</option><option value="views72">Typical 72-hour views</option><option value="er">ER</option><option value="err">ERR</option></optgroup>{% endif %}
           <option value="views" selected>Views</option>
           <option value="reactions">Reactions</option>
           <option value="comments">Comments</option>
@@ -129,10 +154,10 @@
         </select>
       </span>
     </label>
-    <label><span>View</span><select data-ui-dropdown id="chartMode" aria-label="Chart mode"><option value="daily" data-chart-mode="daily">Daily posts</option><option value="cumulative" data-chart-mode="cumulative">Cumulative in window</option></select></label>
+    <label data-legacy-chart-mode><span>View</span><select data-ui-dropdown id="chartMode" aria-label="Chart mode"><option value="daily" data-chart-mode="daily">Daily posts</option><option value="cumulative" data-chart-mode="cumulative">Cumulative in window</option></select></label>
     <label><span>Group by</span><select data-ui-dropdown id="chartPeriod" aria-label="Chart aggregation"><option value="day" data-chart-period="day">Day</option><option value="week" data-chart-period="week">Week</option><option value="month" data-chart-period="month">Month</option></select></label>
   </div>
-  <div class="chart-wrap"><canvas id="trendChart" data-chart='{{ chart|tojson }}' data-chart-scope="{{ scope_label }}" role="img" aria-label="Performance chart. Use the previous and next point buttons for exact values."></canvas></div>
+  <div class="chart-wrap"><canvas id="trendChart" data-chart='{{ chart|tojson }}' data-chart-scope="{{ scope_label }}" data-observation-scope="{{ (applied_from or '…') ~ ' – ' ~ (applied_to or '…') if has_cohort else 'Available history' }}" role="img" aria-label="Performance chart. Use the previous and next point buttons for exact values."></canvas></div>
   <div class="chart-points">
     <button type="button" class="btn ghost small" data-chart-prev>← Previous point</button>
     <button type="button" class="btn ghost small" data-chart-next>Next point →</button>
@@ -268,5 +293,8 @@
   </div>
   <p class="field-error" data-reader-error role="alert" hidden></p>
 </dialog>
+
+
+<dialog class="metric-definitions-dialog" data-metric-definitions aria-labelledby="metricDefinitionsTitle"><div class="reader-head"><h2 id="metricDefinitionsTitle">How metrics are calculated</h2><button type="button" class="btn ghost small" data-metric-definitions-close>Close</button></div><div class="reader-body" tabindex="0"><p>Current post metrics use a rolling 30-day sample. Date range explores observation history; current channel cards stay current.</p><h3>Subscribers</h3><p>Last measured subscriber count. Its observation timestamp is shown separately when a collection could not refresh it.</p><h3>Typical 24 / 48 / 72-hour views</h3><p>Average views measured at the selected post age for eligible posts published in the preceding 30 days. Measurements are collected within 60 minutes after each horizon; coverage shows measured / eligible posts. Missed or older measurements remain unavailable and are never reconstructed from lifetime counters.</p><h3>ER</h3><p>(Reactions + comments + forwards) ÷ post views × 100%. Counts use the same recent post sample and latest stored observations.</p><h3>ERR</h3><p>Average current post views ÷ last measured subscribers × 100%. This is separate from fixed-age views.</p><p>Channel statistics plot actual observations only. Post totals retain Daily posts or Cumulative in window. Weekly/monthly channel plots use the latest recorded observation in each bucket. Unknown values remain gaps. ER/ERR comparisons use percentage points (pp).</p><p>The 30-day sample and collection tolerance are TGhost conventions; exact TGStat numerical parity is not implied.</p></div></dialog>
 
 {% endblock %}
