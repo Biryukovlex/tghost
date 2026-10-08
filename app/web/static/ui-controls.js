@@ -121,6 +121,7 @@
     var selected = state.select.selectedOptions[0];
     var label = selected ? selected.textContent : "No options";
     state.value.textContent = label;
+    state.trigger.title = label;
     var name = state.label + ": " + label;
     state.trigger.setAttribute("aria-label", name);
     state.options.forEach(function (option, index) {
@@ -420,6 +421,10 @@
         closeMenu(false);
         fitPopover(popover);
         document.querySelectorAll("details[data-ui-popover][open]").forEach(function (other) { if (other !== popover) other.open = false; });
+      }, true);
+      document.addEventListener("ui-popover-refit", function (event) {
+        var popover = event.target;
+        if (popover instanceof HTMLDetailsElement && popover.matches("[data-ui-popover]") && popover.open) fitPopover(popover);
       }, true);
       document.addEventListener("pointerdown", function (event) {
         document.querySelectorAll("details[data-ui-popover][open]").forEach(function (popover) { if (!popover.contains(event.target)) popover.open = false; });

@@ -76,23 +76,24 @@
           {% block navactions %}
           <form method="post" action="/refresh" class="inline-form refresh-form">
             {% if current_channel %}<input type="hidden" name="channel" value="{{ current_channel }}">{% endif %}
-            <button type="submit" class="action-btn primary-action">
+            <button type="submit" class="action-btn primary-action" aria-label="Sync now">
               <i class="mgc mgc-refresh-2-core-regular" aria-hidden="true"></i>
               <span>Sync now</span>
             </button>
             {% if msg and request.url.path == "/" %}<span class="sync-feedback" role="status"><span class="sync-feedback-dot" aria-hidden="true"></span><span>{{ msg }}</span><button type="button" data-sync-dismiss aria-label="Dismiss sync status" title="Dismiss sync status"><i class="mgc mgc-close-core-regular" aria-hidden="true"></i></button></span>{% endif %}
           </form>
           <details class="header-export" data-ui-popover>
-            <summary class="action-btn"><i class="mgc mgc-file-export-core-regular" aria-hidden="true"></i><span>Export</span><span class="ui-chevron" aria-hidden="true"></span></summary>
+            <summary class="action-btn" aria-label="Export"><i class="mgc mgc-file-export-core-regular" aria-hidden="true"></i><span>Export</span><span class="ui-chevron" aria-hidden="true"></span></summary>
             <div class="header-export-menu">
-          <a class="action-btn" href="/export.csv{% if current_channel %}?channel={{ current_channel }}{% endif %}">
-            <i class="mgc mgc-file-export-core-regular" aria-hidden="true"></i>
-            <span>Export posts</span>
-          </a>
-          <a class="action-btn" href="/export-comments.csv{% if current_channel %}?channel={{ current_channel }}{% endif %}">
-            <i class="mgc mgc-comment-2-core-regular" aria-hidden="true"></i>
-            <span>Export comments</span>
-          </a>
+              <a class="action-btn" href="/export.csv{% if current_channel %}?channel={{ current_channel }}{% endif %}">
+                <i class="mgc mgc-file-export-core-regular" aria-hidden="true"></i>
+                <span>Export all posts</span>
+              </a>
+              <a class="action-btn" href="/export-comments.csv{% if current_channel %}?channel={{ current_channel }}{% endif %}">
+                <i class="mgc mgc-comment-2-core-regular" aria-hidden="true"></i>
+                <span>Export all comments</span>
+              </a>
+              <p class="export-scope-note">All stored history{% if current_channel %} for the selected channel{% else %} across active channels{% endif %}, independent of the selected date range and Explorer filters.</p>
             </div>
           </details>
           {% endblock %}

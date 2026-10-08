@@ -21,7 +21,7 @@
     <label>
       <span>Channel</span>
       <span class="select-shell">
-        <select data-ui-dropdown name="channel" aria-label="Channel" data-auto-submit>
+        <select data-ui-dropdown name="channel" aria-label="Channel" data-initial-channel="{{ current_channel or '' }}" data-auto-submit>
           <option value="">All active channels</option>
           {% for c in channels %}
           <option value="{{ c.id }}" {% if current_channel == c.id %}selected{% endif %}>
@@ -32,7 +32,7 @@
       </span>
     </label>
     <details class="date-popover" data-ui-popover>
-      <summary><span class="control-caption">Date range</span><span class="date-range-value">{{ applied_from ~ ' – ' ~ applied_to if applied_from and applied_to else 'Available history' }} <span class="ui-chevron" aria-hidden="true"></span></span></summary>
+      <summary><span class="control-caption">Date range</span><span class="date-range-value">{% if applied_from and applied_to %}{{ applied_from }} – {{ applied_to }}{% elif applied_from %}From {{ applied_from }}{% elif applied_to %}Through {{ applied_to }}{% else %}Available history{% endif %} <span class="ui-chevron" aria-hidden="true"></span></span></summary>
     <fieldset class="date-fieldset" aria-label="Date range">
       <legend>Publication dates · UTC</legend>
       <div class="date-inputs">
@@ -45,7 +45,7 @@
           <input type="date" name="to" value="{{ applied_to }}" min="1970-01-01" max="2100-12-31" aria-label="To date, inclusive UTC publication date">
         </label>
         <button type="submit" class="btn small">Apply dates</button>
-        <a class="history-link" href="/?days=all{% if current_channel %}&channel={{ current_channel }}{% endif %}">Available history</a>
+        <a class="history-link" data-available-history href="/?days=all{% if current_channel %}&channel={{ current_channel }}{% endif %}">Available history</a>
       </div>
       <p class="field-error" data-date-error role="alert" hidden></p>
     </fieldset>
@@ -56,7 +56,9 @@
   </form>
   <div class="sync-block">
     <p class="update-meta">
-      Last update: <strong>{{ k.last_poll|dt or 'Never' }} UTC</strong>
+      Last successful collection: <strong>{% if last_successful_collection_at %}{{ last_successful_collection_at|dt }} UTC{% else %}No retained successful job record{% endif %}</strong>
+      <span aria-hidden="true">•</span>
+      Last counter change: <strong>{{ k.last_poll|dt ~ ' UTC' if k.last_poll else 'Not recorded' }}</strong>
       <span aria-hidden="true">•</span>
       {{ k.posts|int }} posts tracked
     </p>
@@ -72,7 +74,7 @@
 {% elif has_cohort and (k.posts|int == 0) %}
 <section class="panel" data-reveal>
   <div class="panel-heading"><div><h2>No posts in this window</h2></div></div>
-  <p class="empty-hint">Nothing was published {{ scope_label }}. <a href="/?days=all{% if current_channel %}&channel={{ current_channel }}{% endif %}">Show available history</a> or pick different dates.</p>
+  <p class="empty-hint">Nothing was published in this date range (UTC). <a data-available-history href="/?days=all{% if current_channel %}&channel={{ current_channel }}{% endif %}">Show available history</a> or pick different dates.</p>
 </section>
 {% endif %}
 
@@ -157,7 +159,7 @@
     <label data-legacy-chart-mode><span>View</span><select data-ui-dropdown id="chartMode" aria-label="Chart mode"><option value="daily" data-chart-mode="daily">Daily posts</option><option value="cumulative" data-chart-mode="cumulative">Cumulative in window</option></select></label>
     <label><span>Group by</span><select data-ui-dropdown id="chartPeriod" aria-label="Chart aggregation"><option value="day" data-chart-period="day">Day</option><option value="week" data-chart-period="week">Week</option><option value="month" data-chart-period="month">Month</option></select></label>
   </div>
-  <div class="chart-wrap"><canvas id="trendChart" data-chart='{{ chart|tojson }}' data-chart-scope="{{ scope_label }}" data-observation-scope="{{ (applied_from or '…') ~ ' – ' ~ (applied_to or '…') if has_cohort else 'Available history' }}" role="img" aria-label="Performance chart. Use the previous and next point buttons for exact values."></canvas></div>
+  <div class="chart-wrap"><canvas id="trendChart" data-chart='{{ chart|tojson }}' data-chart-scope="{{ scope_label }}" data-observation-scope="{{ (applied_from or '…') ~ ' – ' ~ (applied_to or '…') if has_cohort else 'Available history' }}" role="img" aria-label="Performance chart. Use the previous and next point buttons for exact values."></canvas><p class="chart-empty-state" data-chart-empty role="status" hidden></p></div>
   <div class="chart-points">
     <button type="button" class="btn ghost small" data-chart-prev>← Previous point</button>
     <button type="button" class="btn ghost small" data-chart-next>Next point →</button>
@@ -195,11 +197,12 @@
     </div>
     <details class="explorer-filter-popover" data-ui-popover><summary class="btn ghost small">Filters <span class="ui-chevron" aria-hidden="true"></span></summary><div class="explorer-filter-body">
     <fieldset class="explorer-channels" aria-label="Channels">
-      <legend>Channels</legend>
+      <legend>{{ 'Selected Overview channel' if current_channel else 'Channels' }}</legend>
+      {% if current_channel %}<p class="explorer-scope-note">Explorer remains within the selected Overview channel.</p>{% endif %}
       <div class="explorer-checks">
         {% for c in channels %}
-        <label class="explorer-check">
-          <input type="checkbox" name="channels" value="{{ c.id }}"{% if current_channel == c.id %} checked{% elif current_channel %} disabled{% endif %}>
+        <label class="explorer-check" title="{{ c.title or c.identifier }}">
+          <input type="checkbox" name="channels" value="{{ c.id }}"{% if current_channel == c.id %} checked{% endif %}{% if current_channel %} disabled{% endif %}>
           <span>{{ c.title or c.identifier }}</span>
         </label>
         {% endfor %}
@@ -226,13 +229,13 @@
       <button type="button" class="btn ghost small" data-explorer-clear>Clear</button>
     </div>
     </div></details>
-    <p class="field-error" data-explorer-error role="alert" hidden></p>
+    <p class="field-error" id="explorerFilterError" data-explorer-error role="alert" hidden></p>
   </form>
   <div class="explorer-chips" data-explorer-chips aria-live="polite"></div>
   <div class="table-scroll">
     <table class="tbl posts-table explorer-table">
       <colgroup><col class="col-post"><col class="col-views"><col class="col-reactions"><col class="col-comments"><col class="col-shares"></colgroup>
-      <thead><tr><th scope="col">Post · published ↓</th><th scope="col">Views</th><th scope="col">Reactions</th><th scope="col">Comments</th><th scope="col">Shares</th></tr></thead>
+      <thead><tr><th scope="col">Post · published</th><th scope="col">Views</th><th scope="col">Reactions</th><th scope="col">Comments</th><th scope="col">Shares</th></tr></thead>
       <tbody data-explorer-rows>
         {% for r in rows %}
         <tr>

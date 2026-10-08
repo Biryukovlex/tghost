@@ -564,6 +564,8 @@ def create_app(collector: Collector, settings: Settings | RuntimeSettings, works
         page_numbers = list(range(first_page_link, last_page_link + 1))
         metrics_reader = getattr(db, "channel_metrics", None)
         cm = await metrics_reader(channel_id, from_param, to_param) if metrics_reader is not None else empty_metrics()
+        collection_reader = getattr(db, "last_successful_collection_at", None)
+        last_successful_collection_at = await collection_reader(channel_id) if collection_reader is not None else None
         chart = {
             "labels": ts["days"],
             "views": ts["views"],
@@ -587,6 +589,7 @@ def create_app(collector: Collector, settings: Settings | RuntimeSettings, works
                     "collected_comments": int(k.get("collected_comments", 0) or 0),
                     "last_poll": str(k.get("last_poll") or "") or None,
                 },
+                "last_successful_collection_at": last_successful_collection_at.isoformat() if hasattr(last_successful_collection_at, "isoformat") else (str(last_successful_collection_at) if last_successful_collection_at else None),
                 "channel_metrics": cm,
                 "chart": chart,
                 "pagination": {
@@ -615,6 +618,7 @@ def create_app(collector: Collector, settings: Settings | RuntimeSettings, works
             "last_row": last_row,
             "has_next": has_next,
             "channel_metrics": cm,
+            "last_successful_collection_at": last_successful_collection_at,
             "chart": chart,
         })
 
@@ -659,6 +663,8 @@ def create_app(collector: Collector, settings: Settings | RuntimeSettings, works
             return _json_error("invalid_date", str(exc), 422)
         metrics_reader = getattr(db, "channel_metrics", None)
         cm = await metrics_reader(channel_id, from_param, to_param) if metrics_reader is not None else empty_metrics()
+        collection_reader = getattr(db, "last_successful_collection_at", None)
+        last_successful_collection_at = await collection_reader(channel_id) if collection_reader is not None else None
         return {
             "channel_id": channel_id,
             "from": from_param,
@@ -672,6 +678,7 @@ def create_app(collector: Collector, settings: Settings | RuntimeSettings, works
                 "collected_comments": int(k.get("collected_comments", 0) or 0),
                 "last_poll": str(k.get("last_poll") or "") or None,
             },
+            "last_successful_collection_at": last_successful_collection_at.isoformat() if hasattr(last_successful_collection_at, "isoformat") else (str(last_successful_collection_at) if last_successful_collection_at else None),
             "channel_metrics": cm,
             "series": {
                 "days": ts["days"],
@@ -751,6 +758,25 @@ def create_app(collector: Collector, settings: Settings | RuntimeSettings, works
         except ValueError as exc:
             return _json_error("invalid_range", str(exc), 422)
         total_pages = max(1, (total + page_size - 1) // page_size) if total else 1
+        if page > total_pages:
+            page = total_pages
+            rows, total = await explorer(
+                channel_id=channel_id,
+                channel_ids=channel_ids,
+                search=search,
+                sort=sort,
+                min_views=min_views,
+                max_views=max_views,
+                min_reactions=min_reactions,
+                max_reactions=max_reactions,
+                min_comments=min_comments,
+                max_comments=max_comments,
+                min_shares=min_shares,
+                max_shares=max_shares,
+                limit=page_size,
+                offset=(page - 1) * page_size,
+            )
+            total_pages = max(1, (total + page_size - 1) // page_size) if total else 1
         payload_rows = []
         for row in rows:
             item = dict(row)

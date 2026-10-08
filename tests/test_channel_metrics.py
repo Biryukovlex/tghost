@@ -148,3 +148,66 @@ async def test_postgres_measured_age_coverage_rates_and_workspace_boundary():
                 await session.execute(text('DELETE FROM workspaces WHERE id=:id'),{'id':repo.workspace_id})
                 await session.commit()
             await repo.close()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_successful_collection_freshness_is_channel_workspace_and_active_scoped():
+    url = os.environ.get("TEST_POSTGRES_URL")
+    if not url:
+        pytest.skip("TEST_POSTGRES_URL is required")
+    slug = f"overview-fresh-{uuid.uuid4().hex[:10]}"
+    db = PostgresDatabase(url, workspace_slug=slug)
+    other = PostgresDatabase(url, workspace_slug=slug + "-other")
+    await db.init_db(admin_username=slug)
+    await other.init_db(admin_username=slug + "-other")
+    try:
+        first_channel = await db.add_channel("@synthetic_first")
+        second_channel = await db.add_channel("@synthetic_second")
+        other_channel = await other.add_channel("@synthetic_other")
+
+        post = await db.upsert_post(first_channel, 1, datetime.now(timezone.utc) - timedelta(days=1), "Synthetic post")
+        await db.add_snapshot_if_changed(post, 100, 10, 20, 5)
+        last_counter_change = (await db.kpis(first_channel))["last_poll"]
+        assert last_counter_change is not None
+
+        first_job = await db.claim_collection_job(first_channel)
+        assert first_job is not None
+        await db.finish_collection_job(first_job, status="succeeded")
+        first_finished = await db.last_successful_collection_at(first_channel)
+        assert first_finished is not None
+        assert await db.last_successful_collection_at(second_channel) is None
+
+        second_job = await db.claim_collection_job(second_channel)
+        assert second_job is not None
+        await db.finish_collection_job(second_job, status="succeeded")
+        second_finished = await db.last_successful_collection_at(second_channel)
+        assert second_finished is not None and second_finished >= first_finished
+        assert await db.last_successful_collection_at() == second_finished
+        assert (await db.kpis(first_channel))["last_poll"] == last_counter_change
+
+        failed_job = await db.claim_collection_job(first_channel)
+        assert failed_job is not None
+        await db.finish_collection_job(failed_job, status="failed", error="synthetic failure")
+        running_job = await db.claim_collection_job(first_channel)
+        assert running_job is not None
+        assert await db.last_successful_collection_at(first_channel) == first_finished
+
+        await db._execute(
+            "UPDATE channels SET active=false WHERE workspace_id=:workspace_id AND id=:channel_id",
+            {"channel_id": second_channel},
+        )
+        assert await db.last_successful_collection_at() == first_finished
+        assert await db.last_successful_collection_at(second_channel) == second_finished
+        other_job = await other.claim_collection_job(other_channel)
+        assert other_job is not None
+        await other.finish_collection_job(other_job, status="succeeded")
+        assert await other.last_successful_collection_at(other_channel) is not None
+        assert await db.last_successful_collection_at(other_channel) is None
+        assert await db.last_successful_collection_at() == first_finished
+    finally:
+        for repo in (db, other):
+            async with repo.sessions.session() as session:
+                await session.execute(text("DELETE FROM workspaces WHERE id=:id"), {"id": repo.workspace_id})
+                await session.commit()
+            await repo.close()

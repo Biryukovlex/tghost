@@ -196,6 +196,72 @@ async def test_dashboard_cohort_scopes_cards_and_chart(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_open_ended_date_labels_and_full_archive_export_copy(tmp_path):
+    app, _, _ = _make_app(tmp_path)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        await client.post("/login", data={"username": "admin", "password": "pw"})
+        from_only = await client.get("/?from=2026-09-01")
+        to_only = await client.get("/?to=2026-09-01")
+        empty = await client.get("/?from=2027-01-01&to=2027-01-02")
+        assert "From 2026-09-01" in from_only.text
+        assert "Through 2026-09-01" in to_only.text
+        assert "Nothing was published in this date range (UTC)." in empty.text
+        assert "Nothing was published Posts published" not in empty.text
+        assert "No retained successful job record" in empty.text
+        assert 'aria-label="Sync now"' in from_only.text
+        assert 'aria-label="Export"' in from_only.text
+        assert "Export all posts" in from_only.text
+        assert "Export all comments" in from_only.text
+        assert "All stored history across active channels, independent of the selected date range and Explorer filters." in from_only.text
+        assert "Post · published ↓" not in from_only.text
+        assert "Last successful collection:" in from_only.text
+        assert "Last counter change:" in from_only.text
+
+
+@pytest.mark.asyncio
+async def test_overview_collection_freshness_uses_job_completion_and_preserves_last_poll(tmp_path):
+    from datetime import datetime, timezone
+
+    class FreshnessDB(_T46FakeDB):
+        async def last_successful_collection_at(self, channel_id=None):
+            return datetime(2026, 10, 7, 23, 53, tzinfo=timezone.utc) if channel_id == 1 else None
+
+    app, _, _ = _make_app(tmp_path, db=FreshnessDB())
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        await client.post("/login", data={"username": "admin", "password": "pw"})
+        page = await client.get("/?channel=1")
+        assert "Last successful collection: <strong>2026-10-07 23:53 UTC" in page.text
+        assert "Last counter change: <strong>2026-09-06 12:00 UTC" in page.text
+        data = (await client.get("/api/overview?channel=1")).json()
+        assert data["last_successful_collection_at"] == "2026-10-07T23:53:00+00:00"
+        assert data["kpis"]["last_poll"] == "2026-09-06 12:00:00+00:00"
+
+
+@pytest.mark.asyncio
+async def test_explorer_clamps_page_to_filtered_result_count(tmp_path):
+    class ExplorerDB(_T46FakeDB):
+        def __init__(self):
+            super().__init__()
+            self.offsets = []
+
+        async def explorer_posts(self, **query):
+            rows = [row for row in self.posts if query["channel_id"] is None or row["channel_id"] == query["channel_id"]]
+            self.offsets.append(query["offset"])
+            return rows[query["offset"]:query["offset"] + query["limit"]], len(rows)
+
+    db = ExplorerDB()
+    app, _, _ = _make_app(tmp_path, db=db)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        await client.post("/login", data={"username": "admin", "password": "pw"})
+        response = await client.get("/api/explorer?channel=1&page=12&page_size=1")
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["page"] == payload["total_pages"] == 2
+        assert [row["id"] for row in payload["rows"]] == [2]
+        assert db.offsets == [11, 1]
+
+
+@pytest.mark.asyncio
 async def test_single_day_cohort_selects_one_post(tmp_path):
     app, _, _ = _make_app(tmp_path)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:

@@ -1271,3 +1271,24 @@ class PostgresDatabase(ChannelMetricsRepository):
         ).mappings().first()
         value = row["value"] if row else None
         return _aware(value) if value is not None else None
+
+    async def last_successful_collection_at(self, channel_id: int | None = None) -> datetime | None:
+        """Return the newest successful collection completion in Overview scope.
+
+        An explicit channel remains readable if it is paused. The all-channel
+        view includes only active channels, matching the Overview data scope.
+        """
+        row = (
+            await self._execute(
+                """SELECT MAX(job.finished_at) AS value
+                     FROM collection_jobs job
+                     JOIN channels c ON c.id=job.channel_id AND c.workspace_id=job.workspace_id
+                    WHERE job.workspace_id=:workspace_id AND job.status='succeeded'
+                      AND (CAST(:channel_id AS bigint) IS NOT NULL
+                           AND job.channel_id=CAST(:channel_id AS bigint)
+                           OR CAST(:channel_id AS bigint) IS NULL AND c.active=true)""",
+                {"channel_id": channel_id},
+            )
+        ).mappings().first()
+        value = row["value"] if row else None
+        return _aware(value) if value is not None else None

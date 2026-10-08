@@ -2,6 +2,82 @@
   document.documentElement.classList.add('motion-ready');
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   const format = new Intl.NumberFormat('en-US');
+  const overviewDefaults = {
+    q: '', sort: 'date', page: '1', channels: '',
+    min_views: '', max_views: '', min_reactions: '', max_reactions: '',
+    min_comments: '', max_comments: '', min_shares: '', max_shares: '',
+    chart_metric: 'views', chart_mode: 'daily', chart_period: 'day',
+  };
+
+  function updateOverviewUrl(values, historyMode = 'push') {
+    if (historyMode === 'none') return;
+    const url = new URL(window.location.href);
+    Object.entries(values).forEach(([key, raw]) => {
+      const value = raw == null ? '' : String(raw);
+      if (!value || value === overviewDefaults[key]) url.searchParams.delete(key);
+      else url.searchParams.set(key, value);
+    });
+    if (Object.hasOwn(values, 'sort')) {
+      const sort = values.sort || 'date';
+      if (sort === 'date') url.searchParams.delete('order');
+      else url.searchParams.set('order', sort);
+    }
+    const next = `${url.pathname}${url.search}${url.hash}`;
+    if (next === `${window.location.pathname}${window.location.search}${window.location.hash}`) return;
+    const method = historyMode === 'replace' ? 'replaceState' : 'pushState';
+    window.history[method](window.history.state, '', next);
+  }
+
+  function syncOverviewStateToForm(form) {
+    const url = new URL(window.location.href);
+    const channelSelect = form.querySelector('select[name="channel"]');
+    const currentChannel = channelSelect?.value || '';
+    const initialChannel = channelSelect?.dataset.initialChannel || '';
+    if (currentChannel !== initialChannel) {
+      url.searchParams.delete('channels');
+      url.searchParams.delete('page');
+    }
+    const get = (key) => url.searchParams.get(key) || '';
+    const sort = get('sort') || get('order') || 'date';
+    const fields = {
+      q: get('q'), sort, channels: currentChannel ? '' : get('channels'),
+      min_views: get('min_views'), max_views: get('max_views'),
+      min_reactions: get('min_reactions'), max_reactions: get('max_reactions'),
+      min_comments: get('min_comments'), max_comments: get('max_comments'),
+      min_shares: get('min_shares'), max_shares: get('max_shares'),
+      chart_metric: get('chart_metric'), chart_mode: get('chart_mode'), chart_period: get('chart_period'),
+    };
+    Object.entries(fields).forEach(([name, value]) => {
+      const existing = [...form.querySelectorAll(`input[type="hidden"][name="${name}"]`)];
+      if (!value || value === overviewDefaults[name]) {
+        existing.forEach((input) => input.remove());
+        return;
+      }
+      const input = existing[0] || document.createElement('input');
+      existing.slice(1).forEach((duplicate) => duplicate.remove());
+      input.type = 'hidden';
+      input.name = name;
+      input.value = value;
+      if (!input.isConnected) form.append(input);
+    });
+    const page = form.querySelector('input[type="hidden"][name="page"]');
+    if (page) page.value = currentChannel !== initialChannel ? '1' : (get('page') || '1');
+    const order = form.querySelector('input[type="hidden"][name="order"]');
+    if (order) order.value = sort;
+  }
+
+  function bindAvailableHistoryLinks() {
+    document.querySelectorAll('[data-available-history]').forEach((link) => {
+      link.addEventListener('click', () => {
+        const url = new URL(window.location.href);
+        url.searchParams.set('days', 'all');
+        url.searchParams.delete('from');
+        url.searchParams.delete('to');
+        link.href = `${url.pathname}${url.search}${url.hash}`;
+      });
+    });
+  }
+  bindAvailableHistoryLinks();
 
   function animateNumber(element) {
     const finalValue = Number(element.dataset.count || 0);
@@ -74,15 +150,34 @@
     const error = form.querySelector('[data-date-error]');
     const lastFrom = form.dataset.lastFrom || '';
     const lastTo = form.dataset.lastTo || '';
-    const showError = (message) => {
+    const popover = form.querySelector('.date-popover');
+    const errorId = error?.id || 'dateRangeError';
+    if (error) error.id = errorId;
+    const refitPopover = () => {
+      if (!popover?.open) return;
+      window.requestAnimationFrame(() => popover.dispatchEvent(new CustomEvent('ui-popover-refit', { bubbles: true })));
+    };
+    const showError = (message, field) => {
       if (!error) return;
       error.textContent = message;
       error.hidden = false;
+      [fromInput, toInput].forEach((input) => {
+        if (!input) return;
+        input.setAttribute('aria-describedby', errorId);
+        input.setAttribute('aria-invalid', String(input === field));
+      });
+      field?.focus();
+      refitPopover();
     };
     const clearError = () => {
       if (!error) return;
       error.textContent = '';
       error.hidden = true;
+      [fromInput, toInput].forEach((input) => {
+        input?.removeAttribute('aria-invalid');
+        if (input?.getAttribute('aria-describedby') === errorId) input.removeAttribute('aria-describedby');
+      });
+      refitPopover();
     };
     const isRealDate = (value) => {
       if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
@@ -97,19 +192,22 @@
       const to = (toInput?.value || '').trim();
       if (!from && !to) {
         clearError();
+        syncOverviewStateToForm(form);
         return;
       }
       let message = '';
-      if (from && !isRealDate(from)) message = 'From must be a real calendar date (YYYY-MM-DD, 1970–2100).';
-      else if (to && !isRealDate(to)) message = 'To must be a real calendar date (YYYY-MM-DD, 1970–2100).';
-      else if (from && to && from > to) message = 'From must not be after To. The last applied range is kept.';
+      let invalidField = null;
+      if (from && !isRealDate(from)) { message = 'From must be a real calendar date (YYYY-MM-DD, 1970–2100).'; invalidField = fromInput; }
+      else if (to && !isRealDate(to)) { message = 'To must be a real calendar date (YYYY-MM-DD, 1970–2100).'; invalidField = toInput; }
+      else if (from && to && from > to) { message = 'From must not be after To. The last applied range is kept.'; invalidField = fromInput; }
       if (message) {
         event.preventDefault();
         if (fromInput) fromInput.value = lastFrom;
         if (toInput) toInput.value = lastTo;
-        showError(message);
+        showError(message, invalidField);
       } else {
         clearError();
+        syncOverviewStateToForm(form);
       }
     });
   });
@@ -681,21 +779,34 @@
 
       const state = { metric: 'views', mode: 'daily', period: 'day', point: 0 };
       const metricSelect = document.getElementById('chartMetric');
-      if (metricSelect && metricSelect instanceof HTMLSelectElement) {
-        state.metric = chartMetricNames[metricSelect.value] ? metricSelect.value : 'views';
-      }
+      const chartParams = new URL(window.location.href).searchParams;
+      const allowedMetrics = new Set(metricSelect ? [...metricSelect.options].map((option) => option.value) : ['views', 'reactions', 'comments', 'shares']);
+      const requestedMetric = chartParams.get('chart_metric') || metricSelect?.value || 'views';
+      state.metric = chartMetricNames[requestedMetric] && allowedMetrics.has(requestedMetric) ? requestedMetric : 'views';
+      state.mode = chartParams.get('chart_mode') === 'cumulative' ? 'cumulative' : 'daily';
+      state.period = ['week', 'month'].includes(chartParams.get('chart_period')) ? chartParams.get('chart_period') : 'day';
+      if (isChannelMetric()) state.mode = 'daily';
+      if (metricSelect) metricSelect.value = state.metric;
+      const initialMode = document.getElementById('chartMode');
+      const initialPeriod = document.getElementById('chartPeriod');
+      if (initialMode) initialMode.value = state.mode;
+      if (initialPeriod) initialPeriod.value = state.period;
+      [metricSelect, initialMode, initialPeriod].forEach((select) => select?.dispatchEvent(new Event('ui-select-sync')));
+      updateOverviewUrl({ chart_metric: state.metric, chart_mode: state.mode, chart_period: state.period }, 'replace');
 
       function bucketed() {
         if (isChannelMetric()) {
           const series = channelMetrics?.series || { labels: [] };
           const buckets = new Map();
           series.labels.forEach((label,index) => {
-            if (state.period !== 'day' && series.observed?.[index] === false) return;
             let key=label, text=dayLabel(label);
             if (state.period === 'month') {key=label.slice(0,7);text=monthLabel(key);}
             else if (state.period === 'week') {const date=new Date(`${label}T00:00:00Z`);date.setUTCDate(date.getUTCDate()-((date.getUTCDay()+6)%7));key=date.toISOString().slice(0,10);text=`Week of ${dayLabel(key)}`;}
             const raw=series[state.metric]?.[index];
-            buckets.set(key,{label:text,value:raw == null ? null : Number(raw)});
+            const observed = Array.isArray(series.observed) ? series.observed[index] === true : raw != null;
+            const entry = buckets.get(key) || { label: text, value: null };
+            if (observed) entry.value = raw == null ? null : Number(raw);
+            buckets.set(key, entry);
           });
           return {labels:[...buckets.values()].map(p=>p.label),values:[...buckets.values()].map(p=>p.value)};
         }
@@ -736,8 +847,11 @@
       const readout = document.querySelector('[data-chart-readout]');
       const prevButton = document.querySelector('[data-chart-prev]');
       const nextButton = document.querySelector('[data-chart-next]');
+      const emptyState = document.querySelector('[data-chart-empty]');
+      const hasLegacyPosts = Array.isArray(data.postsPerDay) && data.postsPerDay.some((count) => Number(count) > 0);
+      const hasMeasuredChannelValue = channelKeys.some((key) => (channelMetrics?.series?.[key] || []).some((value) => value != null && Number.isFinite(Number(value))));
       let trendChart = null;
-      if (data.labels.length > 0 || channelMetrics?.series?.labels?.length > 0) {
+      if (hasLegacyPosts || hasMeasuredChannelValue) {
         trendChart = new window.Chart(trendCanvas, {
           type: 'line',
           data: { labels: [], datasets: [{ label: chartMetricNames[state.metric], data: [], borderColor: chartColors[state.metric], backgroundColor: chartFills[state.metric], fill: true, cubicInterpolationMode: 'monotone', borderWidth: 2.5, pointRadius: 2, pointHoverRadius: 6 }] },
@@ -759,12 +873,15 @@
       }
 
       function currentPoints() {
+        if (!isChannelMetric() && !hasLegacyPosts) return [];
         const { labels, values } = bucketed();
-        return labels.map((label, index) => ({ label, value: values[index] }));
+        return labels.map((label, index) => ({ label, value: values[index], index }))
+          .filter((point) => point.value != null && Number.isFinite(Number(point.value)));
       }
 
       function renderChart() {
         const points = currentPoints();
+        const plot = bucketed();
         state.point = points.length === 0 ? 0 : Math.min(state.point, points.length - 1);
         const metricName = chartMetricNames[state.metric];
         const modeSuffix = !isChannelMetric() && state.mode === 'cumulative' ? ' (cumulative in window)' : '';
@@ -776,21 +893,52 @@
         if (scope) scope.textContent = isChannelMetric() ? `Recorded observations · ${observationScope} (UTC). Current channel cards stay current.` : `Latest known totals grouped by publication date · UTC. ${scopeLabel}.`;
         document.querySelectorAll('[data-channel-metric]').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.channelMetric === state.metric)));
         if (/^views(24|48|72)$/.test(state.metric)) setHorizon(state.metric.slice(5));
+        const empty = points.length === 0;
+        trendCanvas.hidden = empty;
+        if (emptyState) {
+          emptyState.hidden = !empty;
+          if (empty && isChannelMetric()) {
+            const series = channelMetrics?.series || {};
+            const observed = (series.observed || []).some(Boolean);
+            emptyState.textContent = series.labels?.length
+              ? `${metricName} has no measured values in this date range. Try a wider range or keep collecting to build history.`
+              : 'No channel observations have been recorded in this date range. Continue collection to build history.';
+            if (!observed && series.labels?.length) emptyState.textContent = 'No channel observations were recorded in this date range. Try a wider range or continue collection to build history.';
+          } else if (empty) {
+            emptyState.textContent = 'No posts are available in this view. Choose a different date range or view available history.';
+          }
+        }
+        if (prevButton) prevButton.disabled = points.length <= 1;
+        if (nextButton) nextButton.disabled = points.length <= 1;
         if (trendChart) {
-          trendChart.options.scales.y.beginAtZero = !isChannelMetric();
-          trendChart.options.scales.y.suggestedMin = isChannelMetric() ? undefined : 0;
+          const yScale = trendChart.options.scales.y;
+          const subscribers = isChannelMetric() && state.metric === 'subscribers';
+          yScale.beginAtZero = !subscribers;
+          yScale.min = undefined;
+          yScale.max = undefined;
+          yScale.suggestedMin = subscribers ? undefined : 0;
+          yScale.suggestedMax = undefined;
+          if (subscribers && points.length > 0) {
+            const values = points.map((point) => Number(point.value));
+            const low = Math.min(...values);
+            const high = Math.max(...values);
+            const padding = Math.max(1, (high - low) * 0.1, Math.abs(high) * 0.002);
+            yScale.min = Math.max(0, Math.floor(low - padding));
+            yScale.max = Math.ceil(high + padding);
+          }
           trendChart.options.scales.y.ticks.callback = value => number(value);
           trendChart.options.plugins.tooltip.callbacks = { label: context => `${chartMetricNames[state.metric]}: ${number(context.parsed.y)}` };
-          trendChart.data.labels = points.map((p) => p.label);
+          trendChart.data.labels = empty ? [] : plot.labels;
           trendChart.data.datasets[0].label = `${metricName}${modeSuffix}`;
-          trendChart.data.datasets[0].data = points.map((p) => p.value);
+          trendChart.data.datasets[0].data = empty ? [] : plot.values;
           trendChart.data.datasets[0].borderColor = chartColors[state.metric];
           trendChart.data.datasets[0].backgroundColor = chartFills[state.metric] || `${chartColors[state.metric]}18`;
           trendChart.update(motionOK ? undefined : 'none');
         }
         if (summary) {
+          summary.hidden = false;
           if (points.length === 0) {
-            summary.textContent = isChannelMetric() ? `${metricName} · ${observationScope}: no observations in this window.` : `${metricName} · ${scopeLabel}: no posts in this window.`;
+            summary.textContent = isChannelMetric() ? `${metricName} · ${observationScope}: no measured values in this window.` : `${metricName} · ${scopeLabel}: no posts in this window.`;
           } else if (isChannelMetric()) {
             const latest = points[points.length - 1];
             summary.textContent = `${metricName} · recorded observations: ${points.length} points, latest ${number(latest.value)} on ${latest.label}.`;
@@ -814,8 +962,8 @@
         const points = currentPoints();
         if (!readout) return;
         if (points.length === 0) {
-          readout.textContent = 'No chart points in this window.';
-          trendCanvas.setAttribute('aria-label', isChannelMetric() ? 'Empty channel chart. No observations in this window.' : 'Empty performance chart. No posts in this window.');
+          readout.textContent = 'No measured chart points in this window.';
+          trendCanvas.setAttribute('aria-label', isChannelMetric() ? 'Empty channel chart. No measured observations in this window.' : 'Empty performance chart. No posts in this window.');
           return;
         }
         const point = points[state.point];
@@ -825,7 +973,7 @@
         trendCanvas.setAttribute('aria-label', `Performance chart, ${metricName}. Current point: ${readout.textContent}`);
         if (trendChart) {
           try {
-            trendChart.setActiveElements([{ datasetIndex: 0, index: state.point }]);
+            trendChart.setActiveElements([{ datasetIndex: 0, index: point.index }]);
             trendChart.update(motionOK ? undefined : 'none');
           } catch { /* Highlighting is decorative; the readout stays exact. */ }
         }
@@ -874,20 +1022,28 @@
         metricSelect.addEventListener('change', () => {
           if (chartMetricNames[metricSelect.value]) {
             state.metric = metricSelect.value;
+            if (isChannelMetric()) state.mode = 'daily';
+            if (initialMode) {
+              initialMode.value = state.mode;
+              initialMode.dispatchEvent(new Event('ui-select-sync'));
+            }
             state.point = 0;
             renderChart();
+            updateOverviewUrl({ chart_metric: state.metric, chart_mode: state.mode, chart_period: state.period });
           }
         });
       }
       document.getElementById('chartMode')?.addEventListener('change', (event) => {
-        state.mode = event.target.value === 'cumulative' ? 'cumulative' : 'daily';
+        state.mode = !isChannelMetric() && event.target.value === 'cumulative' ? 'cumulative' : 'daily';
         state.point = 0;
         renderChart();
+        updateOverviewUrl({ chart_metric: state.metric, chart_mode: state.mode, chart_period: state.period });
       });
       document.getElementById('chartPeriod')?.addEventListener('change', (event) => {
         state.period = ['week', 'month'].includes(event.target.value) ? event.target.value : 'day';
         state.point = 0;
         renderChart();
+        updateOverviewUrl({ chart_metric: state.metric, chart_mode: state.mode, chart_period: state.period });
       });
       if (prevButton) {
         prevButton.addEventListener('click', () => {
@@ -906,6 +1062,18 @@
         });
       }
       renderChart();
+      window.addEventListener('popstate', () => {
+        const params = new URL(window.location.href).searchParams;
+        const requested = params.get('chart_metric') || 'views';
+        state.metric = chartMetricNames[requested] && allowedMetrics.has(requested) ? requested : 'views';
+        state.mode = params.get('chart_mode') === 'cumulative' && !isChannelMetric() ? 'cumulative' : 'daily';
+        state.period = ['week', 'month'].includes(params.get('chart_period')) ? params.get('chart_period') : 'day';
+        state.point = 0;
+        if (metricSelect) { metricSelect.value = state.metric; metricSelect.dispatchEvent(new Event('ui-select-sync')); }
+        if (initialMode) { initialMode.value = state.mode; initialMode.dispatchEvent(new Event('ui-select-sync')); }
+        if (initialPeriod) { initialPeriod.value = state.period; initialPeriod.dispatchEvent(new Event('ui-select-sync')); }
+        renderChart();
+      });
     }
   }
 
@@ -918,9 +1086,17 @@
   const PREFILL_STORAGE_KEY = 'tg-studio:prefill';
   const PREFILL_MAX_TEXT = 4000;
 
-  function explorerError(message) {
+  function explorerError(message, field = null) {
     const node = document.querySelector('[data-explorer-error]');
     if (!node) return;
+    const form = node.closest('[data-explorer-form]');
+    const describedBy = node.id || 'explorerFilterError';
+    form?.querySelectorAll('input, select').forEach((input) => {
+      input.removeAttribute('aria-invalid');
+      const ids = (input.getAttribute('aria-describedby') || '').split(/\s+/).filter((id) => id && id !== describedBy);
+      if (ids.length) input.setAttribute('aria-describedby', ids.join(' '));
+      else input.removeAttribute('aria-describedby');
+    });
     if (!message) {
       node.textContent = '';
       node.hidden = true;
@@ -928,6 +1104,13 @@
     }
     node.textContent = message;
     node.hidden = false;
+    if (field) {
+      field.setAttribute('aria-invalid', 'true');
+      const ids = new Set((field.getAttribute('aria-describedby') || '').split(/\s+/).filter(Boolean));
+      ids.add(describedBy);
+      field.setAttribute('aria-describedby', [...ids].join(' '));
+      field.focus();
+    }
   }
 
   const explorerForm = document.querySelector('[data-explorer-form]');
@@ -938,43 +1121,91 @@
     const countNode = document.querySelector('[data-explorer-count]');
     const searchInput = explorerForm.querySelector('input[name="q"]');
     const sortSelect = explorerForm.querySelector('select[name="sort"]');
+    const topChannelSelect = document.querySelector('[data-date-range-form] select[name="channel"]');
     let explorerSequence = 0;
 
     let currentPage = 1;
     let totalPages = 1;
+    const explorerBoundNames = EXPLORER_METRICS.flatMap((metric) => [`min_${metric}`, `max_${metric}`]);
+
+    function restoreExplorerStateFromUrl() {
+      const params = new URL(window.location.href).searchParams;
+      const fixedChannel = topChannelSelect?.value || '';
+      const maxRows = Math.min(50, explorerForm.querySelectorAll('input[name="channels"]').length);
+      const knownChannels = new Set([...explorerForm.querySelectorAll('input[name="channels"]')].map((box) => box.value));
+      const requested = (params.get('channels') || '').split(',').filter((id) => /^\d+$/.test(id) && knownChannels.has(id));
+      const selected = new Set(fixedChannel ? [] : [...new Set(requested)].slice(0, maxRows));
+      explorerForm.querySelectorAll('input[name="channels"]').forEach((box) => {
+        box.disabled = Boolean(fixedChannel);
+        box.checked = fixedChannel ? box.value === fixedChannel : selected.has(box.value);
+      });
+      const query = (params.get('q') || '').trim();
+      if (searchInput) searchInput.value = query.length <= 200 ? query : '';
+      const allowedSorts = ['date', 'views', 'reactions', 'comments', 'shares'];
+      const requestedSort = params.get('sort') || params.get('order') || 'date';
+      if (sortSelect) {
+        sortSelect.value = allowedSorts.includes(requestedSort) ? requestedSort : 'date';
+        sortSelect.dispatchEvent(new Event('ui-select-sync'));
+      }
+      explorerBoundNames.forEach((name) => {
+        const raw = params.get(name) || '';
+        const value = raw !== '' && /^\d+$/.test(raw) && Number(raw) <= 2147483647 ? raw : '';
+        const input = explorerForm.querySelector(`input[name="${name}"]`);
+        if (input) input.value = value;
+      });
+      EXPLORER_METRICS.forEach((metric) => {
+        const low = explorerForm.querySelector(`input[name="min_${metric}"]`);
+        const high = explorerForm.querySelector(`input[name="max_${metric}"]`);
+        if (low?.value && high?.value && Number(low.value) > Number(high.value)) {
+          low.value = '';
+          high.value = '';
+        }
+      });
+      const requestedPage = Number(params.get('page') || '1');
+      return Number.isInteger(requestedPage) && requestedPage >= 1 && requestedPage <= 10000 ? requestedPage : 1;
+    }
 
     function readExplorerState(page) {
       const q = (searchInput?.value || '').trim();
-      if (q.length > 200) return { error: 'Search must be at most 200 characters.' };
-      const channels = [...explorerForm.querySelectorAll('input[name="channels"]:checked')]
+      if (q.length > 200) return { error: 'Search must be at most 200 characters.', field: searchInput };
+      const fixedChannel = topChannelSelect?.value || '';
+      const channels = fixedChannel ? [] : [...explorerForm.querySelectorAll('input[name="channels"]:checked')]
         .map((box) => box.value)
         .filter((value) => /^\d+$/.test(value));
+      if (channels.length > 50) {
+        return { error: 'Choose at most 50 channel filters.', field: explorerForm.querySelectorAll('input[name="channels"]:checked')[50] };
+      }
       const sort = sortSelect?.value || 'date';
       if (!['date', 'views', 'reactions', 'comments', 'shares'].includes(sort)) {
-        return { error: 'Sort must be newest, views, reactions, comments or shares.' };
+        return { error: 'Sort must be newest, views, reactions, comments or shares.', field: sortSelect };
       }
       const bounds = {};
       for (const metric of EXPLORER_METRICS) {
-        const rawMin = (explorerForm.querySelector(`input[name="min_${metric}"]`)?.value || '').trim();
-        const rawMax = (explorerForm.querySelector(`input[name="max_${metric}"]`)?.value || '').trim();
+        const minInput = explorerForm.querySelector(`input[name="min_${metric}"]`);
+        const maxInput = explorerForm.querySelector(`input[name="max_${metric}"]`);
+        const rawMin = (minInput?.value || '').trim();
+        const rawMax = (maxInput?.value || '').trim();
         const low = rawMin === '' ? null : Number(rawMin);
         const high = rawMax === '' ? null : Number(rawMax);
-        if ((rawMin !== '' && (!Number.isInteger(low) || low < 0)) || (rawMax !== '' && (!Number.isInteger(high) || high < 0))) {
-          return { error: `Invalid ${metric} range: bounds must be whole numbers from 0 up.` };
+        if ((rawMin !== '' && (!Number.isInteger(low) || low < 0 || low > 2147483647)) || (rawMax !== '' && (!Number.isInteger(high) || high < 0 || high > 2147483647))) {
+          const invalidMin = rawMin !== '' && (!Number.isInteger(low) || low < 0 || low > 2147483647);
+          const field = invalidMin ? minInput : maxInput;
+          return { error: `Invalid ${metric} range: bounds must be whole numbers from 0 to 2,147,483,647.`, field };
         }
         if (low !== null && high !== null && low > high) {
-          return { error: `Invalid ${metric} range: min must not exceed max.` };
+          return { error: `Invalid ${metric} range: min must not exceed max.`, field: minInput };
         }
         if (low !== null) bounds[`min_${metric}`] = low;
         if (high !== null) bounds[`max_${metric}`] = high;
       }
-      return { q, channels, sort, bounds, page: Math.max(1, page || 1) };
+      return { q, channels, channel: fixedChannel, sort, bounds, page: Math.max(1, Math.min(10000, Number(page) || 1)) };
     }
 
     function explorerQuery(state) {
       const params = new URLSearchParams();
+      if (state.channel) params.set('channel', state.channel);
       if (state.q) params.set('q', state.q);
-      if (state.channels.length > 0) params.set('channels', state.channels.join(','));
+      if (!state.channel && state.channels.length > 0) params.set('channels', state.channels.join(','));
       params.set('sort', state.sort);
       Object.entries(state.bounds).forEach(([key, value]) => params.set(key, String(value)));
       params.set('page', String(state.page));
@@ -1045,7 +1276,7 @@
       chipsBox.textContent = '';
       const chips = [];
       if (state.q) chips.push({ label: `Search: ${state.q}`, clear: () => { if (searchInput) searchInput.value = ''; } });
-      if (state.channels.length > 0) {
+      if (!state.channel && state.channels.length > 0) {
         chips.push({
           label: `Channels: ${state.channels.length} selected`,
           clear: () => explorerForm.querySelectorAll('input[name="channels"]:checked').forEach((box) => { box.checked = false; }),
@@ -1071,8 +1302,7 @@
         button.setAttribute('aria-label', `Remove filter ${chip.label}`);
         button.addEventListener('click', () => {
           chip.clear();
-          loadExplorer(1, true);
-          explorerForm.querySelector('[type="submit"]')?.focus();
+          loadExplorer(1, false, 'push');
         });
         chipsBox.append(button);
       });
@@ -1093,7 +1323,7 @@
         button.className = 'btn ghost small';
         button.textContent = label;
         Object.entries(attrs || {}).forEach(([key, value]) => button.setAttribute(key, value));
-        button.addEventListener('click', () => loadExplorer(target, true));
+        button.addEventListener('click', () => loadExplorer(target, true, 'push'));
         pagesNav.append(button);
       };
       if (page > 1) addButton('← Previous', page - 1, { rel: 'prev' });
@@ -1104,14 +1334,23 @@
       if (page < pages) addButton('Next →', page + 1, { rel: 'next' });
     }
 
-    async function loadExplorer(page, moveFocus) {
+    async function loadExplorer(page, moveFocus = false, historyMode = 'push') {
       const state = readExplorerState(page);
       if (state.error) {
-        explorerError(state.error);
-        return;
+        explorerError(state.error, state.field);
+        return false;
       }
       explorerError(null);
+      const focusTarget = moveFocus ? document.activeElement : null;
       const sequence = ++explorerSequence;
+      const urlState = {
+        q: state.q,
+        sort: state.sort,
+        channels: state.channel ? '' : state.channels.join(','),
+        ...Object.fromEntries(explorerBoundNames.map((name) => [name, state.bounds[name] ?? ''])),
+        page: state.page,
+      };
+      updateOverviewUrl(urlState, historyMode);
       let payload = null;
       try {
         const response = await fetch(`/api/explorer?${explorerQuery(state)}`, {
@@ -1125,37 +1364,50 @@
       } catch (error) {
         if (sequence !== explorerSequence) return;
         explorerError(error instanceof Error ? error.message : 'Could not load the Post Explorer. Check the connection and try again.');
-        return;
+        return false;
       }
-      if (sequence !== explorerSequence || !payload) return;
+      if (sequence !== explorerSequence || !payload) return false;
+      const shouldFocusCount = Boolean(moveFocus && focusTarget && document.activeElement === focusTarget);
       renderExplorerRows(payload.rows || []);
       renderChips(state);
       renderPages(payload.page || 1, payload.total_pages || 1, payload.total || 0);
-      if (moveFocus && countNode) {
+      if (Number(payload.page || 1) !== state.page) updateOverviewUrl({ page: payload.page || 1 }, 'replace');
+      if (shouldFocusCount && countNode) {
         countNode.setAttribute('tabindex', '-1');
         countNode.focus({ preventScroll: true });
       }
+      return true;
     }
 
     explorerForm.addEventListener('submit', (event) => {
       event.preventDefault();
-      loadExplorer(1, true);
-      explorerForm.querySelector('details')?.removeAttribute('open');
+      const popover = explorerForm.querySelector('details');
+      const summary = popover?.querySelector('summary');
+      loadExplorer(1, false, 'push').then((success) => {
+        if (!success) return;
+        popover?.removeAttribute('open');
+        summary?.focus();
+      });
     });
     let searchTimer;
     searchInput?.addEventListener('input', () => {
       window.clearTimeout(searchTimer);
-      searchTimer = window.setTimeout(() => loadExplorer(1, true), 250);
+      searchTimer = window.setTimeout(() => loadExplorer(1, false, 'push'), 250);
     });
-    explorerForm.querySelector('[name=sort]')?.addEventListener('change', () => loadExplorer(1, true));
+    explorerForm.querySelector('[name=sort]')?.addEventListener('change', () => loadExplorer(1, false, 'push'));
     explorerForm.querySelector('[data-explorer-clear]')?.addEventListener('click', () => {
       explorerForm.reset();
       sortSelect?.dispatchEvent(new Event('ui-select-sync'));
       explorerError(null);
-      loadExplorer(1, false);
+      loadExplorer(1, false, 'push');
       searchInput?.focus();
     });
-    loadExplorer(1, false);
+    const initialExplorerPage = restoreExplorerStateFromUrl();
+    loadExplorer(initialExplorerPage, false, 'replace');
+    window.addEventListener('popstate', () => {
+      const page = restoreExplorerStateFromUrl();
+      loadExplorer(page, false, 'none');
+    });
   }
 
   // Post reader (T52): full safe Telegram formatting, discussion, latest

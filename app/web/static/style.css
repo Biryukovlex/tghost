@@ -1734,3 +1734,18 @@ body { font-size:16px; }
 @media (max-width:600px) {
   .chart-controls label.chart-metric-field { width:100%; flex:1 1 100%; }
 }
+
+/* Overview controls stay inside their flex columns when labels run long. */
+.filter-form { flex: 1 1 auto; min-width: 0; }
+.filter-form > label { flex: 0 1 224px; min-width: 0; }
+.filter-form .select-shell, .filter-form .ui-select { width: 100%; min-width: 0; }
+.date-popover { flex: 0 1 310px; min-width: 0; }
+.date-range-value { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.date-popover .date-fieldset { overflow: auto; overscroll-behavior: contain; }
+.filter-form .ui-select-option { overflow-wrap: anywhere; }
+.chart-empty-state { position: absolute; inset: 0; display: grid; place-items: center; margin: 0; padding: 24px; color: var(--muted); text-align: center; }
+.explorer-scope-note { margin: 6px 0 0; color: var(--faint); font-size: 11px; }
+.export-scope-note { margin: 8px 10px 2px; max-width: 300px; color: var(--muted); font-size: 11px; line-height: 1.45; }
+@media(max-width:800px) {
+  .filter-form > label, .date-popover { width: 100%; flex: 1 1 100%; }
+}
