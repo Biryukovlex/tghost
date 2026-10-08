@@ -136,6 +136,30 @@ async function settle(): Promise<void> {
 }
 
 describe("Overview vanilla controller", () => {
+  it("retains legacy cumulative choice after exploring channel metrics and reload", async () => {
+    const series = metrics({ labels: ["2026-09-01", "2026-09-02"], observed: [true, true], er: [2, 3] });
+    const app = createOverview({ channel: "1", url: "http://overview.test/?channel=1&chart_mode=cumulative", channelMetrics: series });
+    await settle();
+    const metric = app.window.document.getElementById("chartMetric") as HTMLSelectElement;
+    const mode = app.window.document.getElementById("chartMode") as HTMLSelectElement;
+    expect(app.charts[0].data.datasets[0].data).toEqual([100, 300]);
+    metric.value = "er";
+    metric.dispatchEvent(new app.window.Event("change", { bubbles: true }));
+    expect(app.charts[0].data.datasets[0].data).toEqual([2, 3]);
+    metric.value = "views";
+    metric.dispatchEvent(new app.window.Event("change", { bubbles: true }));
+    expect(mode.value).toBe("cumulative");
+    expect(app.charts[0].data.datasets[0].data).toEqual([100, 300]);
+    metric.value = "er";
+    metric.dispatchEvent(new app.window.Event("change", { bubbles: true }));
+    const reloaded = createOverview({ channel: "1", url: app.window.location.href, channelMetrics: series });
+    await settle();
+    expect(reloaded.charts[0].data.datasets[0].data).toEqual([2, 3]);
+    const restoredMetric = reloaded.window.document.getElementById("chartMetric") as HTMLSelectElement;
+    restoredMetric.value = "views";
+    restoredMetric.dispatchEvent(new reloaded.window.Event("change", { bubbles: true }));
+    expect(reloaded.charts[0].data.datasets[0].data).toEqual([100, 300]);
+  });
   it("keeps Explorer requests inside a selected channel while All active subsets still narrow", async () => {
     const fixed = createOverview({ url: "http://overview.test/?channel=1", channel: "1" });
     await settle();
@@ -312,6 +336,8 @@ describe("Overview vanilla controller", () => {
     expect(max.value).toBe("10");
     expect(min.getAttribute("aria-invalid")).toBe("true");
     expect(min.getAttribute("aria-describedby")).toBe(error.id);
+    expect(error.closest('details')).toBe(details);
+    expect(min.nextElementSibling).toBe(error);
     expect(window.document.activeElement).toBe(min);
     expect(window.document.querySelectorAll('[data-explorer-rows] tr')).toHaveLength(2);
 

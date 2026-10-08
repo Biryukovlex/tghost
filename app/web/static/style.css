@@ -1376,7 +1376,7 @@ select.ui-native-select[aria-hidden="true"] {
 .explorer-check input { width: 15px; height: 15px; margin: 0; accent-color: var(--cyan); }
 .explorer-check:has(input:disabled) { opacity: .45; cursor: not-allowed; }
 .explorer-range-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-top: 7px; }
-.explorer-range-grid label { display: grid; gap: 7px; color: var(--muted); font-size: 11px; font-weight: 600; }
+.explorer-range-grid label { display: grid; align-content: start; gap: 7px; color: var(--muted); font-size: 11px; font-weight: 600; }
 .explorer-range-grid input { min-height: 44px; width: 100%; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: 9px; background: var(--surface); color: var(--text); }
 .explorer-actions { display: flex; gap: 10px; }
 .explorer-chips { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 22px 0; }

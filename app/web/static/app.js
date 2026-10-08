@@ -785,7 +785,7 @@
       state.metric = chartMetricNames[requestedMetric] && allowedMetrics.has(requestedMetric) ? requestedMetric : 'views';
       state.mode = chartParams.get('chart_mode') === 'cumulative' ? 'cumulative' : 'daily';
       state.period = ['week', 'month'].includes(chartParams.get('chart_period')) ? chartParams.get('chart_period') : 'day';
-      if (isChannelMetric()) state.mode = 'daily';
+      // Retain the legacy mode while channel observations bypass aggregation.
       if (metricSelect) metricSelect.value = state.metric;
       const initialMode = document.getElementById('chartMode');
       const initialPeriod = document.getElementById('chartPeriod');
@@ -941,7 +941,7 @@
             summary.textContent = isChannelMetric() ? `${metricName} · ${observationScope}: no measured values in this window.` : `${metricName} · ${scopeLabel}: no posts in this window.`;
           } else if (isChannelMetric()) {
             const latest = points[points.length - 1];
-            summary.textContent = `${metricName} · recorded observations: ${points.length} points, latest ${number(latest.value)} on ${latest.label}.`;
+            summary.textContent = `${metricName} · recorded observations: ${points.length} ${points.length === 1 ? 'point' : 'points'}, latest ${number(latest.value)} on ${latest.label}.`;
           } else {
             const total = points.reduce((sum, p) => sum + p.value, 0);
             const shown = state.mode === 'cumulative'
@@ -1022,7 +1022,6 @@
         metricSelect.addEventListener('change', () => {
           if (chartMetricNames[metricSelect.value]) {
             state.metric = metricSelect.value;
-            if (isChannelMetric()) state.mode = 'daily';
             if (initialMode) {
               initialMode.value = state.mode;
               initialMode.dispatchEvent(new Event('ui-select-sync'));
@@ -1034,7 +1033,8 @@
         });
       }
       document.getElementById('chartMode')?.addEventListener('change', (event) => {
-        state.mode = !isChannelMetric() && event.target.value === 'cumulative' ? 'cumulative' : 'daily';
+        if (isChannelMetric()) return;
+        state.mode = event.target.value === 'cumulative' ? 'cumulative' : 'daily';
         state.point = 0;
         renderChart();
         updateOverviewUrl({ chart_metric: state.metric, chart_mode: state.mode, chart_period: state.period });
@@ -1066,7 +1066,7 @@
         const params = new URL(window.location.href).searchParams;
         const requested = params.get('chart_metric') || 'views';
         state.metric = chartMetricNames[requested] && allowedMetrics.has(requested) ? requested : 'views';
-        state.mode = params.get('chart_mode') === 'cumulative' && !isChannelMetric() ? 'cumulative' : 'daily';
+        state.mode = params.get('chart_mode') === 'cumulative' ? 'cumulative' : 'daily';
         state.period = ['week', 'month'].includes(params.get('chart_period')) ? params.get('chart_period') : 'day';
         state.point = 0;
         if (metricSelect) { metricSelect.value = state.metric; metricSelect.dispatchEvent(new Event('ui-select-sync')); }
@@ -1104,12 +1104,26 @@
     }
     node.textContent = message;
     node.hidden = false;
+    const popover = form?.querySelector('.explorer-filter-popover');
+    if (field && popover?.contains(field)) field.after(node);
+    else if (popover?.open) {
+      const actions = popover.querySelector('.explorer-actions');
+      if (actions) actions.before(node);
+      else popover.append(node);
+    } else form?.append(node);
     if (field) {
       field.setAttribute('aria-invalid', 'true');
       const ids = new Set((field.getAttribute('aria-describedby') || '').split(/\s+/).filter(Boolean));
       ids.add(describedBy);
       field.setAttribute('aria-describedby', [...ids].join(' '));
       field.focus();
+    }
+    if (popover?.open && popover.contains(node)) {
+      window.requestAnimationFrame(() => {
+        if (!popover.open || node.hidden || !popover.contains(node)) return;
+        popover.dispatchEvent(new CustomEvent('ui-popover-refit', { bubbles: true }));
+        node.scrollIntoView?.({ block: 'nearest' });
+      });
     }
   }
 
