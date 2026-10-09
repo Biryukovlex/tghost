@@ -4,8 +4,8 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import JSONB
 
-revision = "0020_simple_drafts"
-down_revision = "0019_calendar_publishing"
+revision = "0021_simple_drafts"
+down_revision = "0020_channel_metrics"
 branch_labels = None
 depends_on = None
 
