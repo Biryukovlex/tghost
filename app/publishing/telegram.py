@@ -24,10 +24,19 @@ class TelegramPublisher:
 
     async def load_limits(self):
         me = await self.client.get_me()
+        if me is None:
+            raise PublishingError('Reconnect Telegram before scheduling a post.', 'account_unavailable')
         self.account_id = me.id
+        premium = bool(getattr(me, 'premium', False))
+        # Set the verified account's default before fetching optional config.
+        # A missing key or transient config failure must not impose the free
+        # account's limit on a Premium account (or keep it after a downgrade).
+        self.caption_limit = 4096 if premium else 1024
         config = config_value((await self.client(functions.help.GetAppConfigRequest(hash=0))).config) or {}
-        name = 'caption_length_limit_premium' if getattr(me, 'premium', False) else 'caption_length_limit_default'
-        self.caption_limit = int(config.get(name, 1024))
+        name = 'caption_length_limit_premium' if premium else 'caption_length_limit_default'
+        limit = int(config.get(name, self.caption_limit))
+        if limit > 0:
+            self.caption_limit = limit
 
     async def peer(self, channel):
         chat_id = int(channel.get('chat_id') or 0)

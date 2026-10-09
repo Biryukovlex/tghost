@@ -290,6 +290,40 @@ async def test_real_adapter_uses_persisted_random_ids_album_and_schedule_date(ap
 
 
 @pytest.mark.asyncio
+async def test_long_album_schedule_uses_refreshed_premium_account_limit(app, client, settings):
+    from unittest.mock import AsyncMock
+    from tests.test_publishing_limits import LimitsClient
+
+    token = await login(client, settings)
+    draft = await make_draft(app, '**Synthetic album**\n' + 'a' * 2000)
+    repo = PublishingRepository(app.state.db)
+    assets = [await repo.upload(uuid.UUID(draft['id']), 'fixture.png', prepare_image(jpeg())) for _ in range(3)]
+    saved = await client.patch(f"/studio/api/drafts/{draft['id']}", json={
+        'expected_revision': draft['revision'], 'media_ids': [asset['id'] for asset in assets],
+        'save_as_new_version': True,
+    }, headers={'x-csrf-token': token})
+    assert saved.status_code == 200
+    draft = saved.json()['draft']
+    account = LimitsClient(False)
+    adapter = TelegramPublisher(account)
+    adapter.permission = AsyncMock(side_effect=lambda channel: (True, '', adapter.caption_limit))
+    worker = PublishingWorker(app.state.db, adapter)
+    await worker.refresh_permissions()
+    payload = schedule_input(draft, app.state.test_channel_id)
+    response = await client.post('/studio/api/publishing/posts', json=payload, headers={'x-csrf-token': token})
+    assert response.status_code == 422
+    assert response.json()['error']['code'] == 'caption_too_long'
+    account.premium = True
+    await worker.refresh_permissions()
+    response = await client.post('/studio/api/publishing/posts', json=payload, headers={'x-csrf-token': token})
+    assert response.status_code == 200, response.text
+    post = response.json()['post']
+    assert post['snapshot']['body'] == draft['body']
+    assert [asset['id'] for asset in post['snapshot']['media']] == [asset['id'] for asset in assets]
+    assert [part['kind'] for part in post['parts']] == ['photo'] * 3
+
+
+@pytest.mark.asyncio
 async def test_cross_workspace_media_posts_and_drafts_are_unavailable(app, client, settings):
     from app.postgres_db import PostgresDatabase
     from app.studio.repository import StudioRepository

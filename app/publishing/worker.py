@@ -23,6 +23,10 @@ class PublishingWorker:
         self.lock = asyncio.Lock()
 
     async def refresh_permissions(self):
+        try:
+            await self.adapter.load_limits()
+        except Exception as exc:
+            log.warning('Telegram caption limits refresh failed (%s); using the last account limits.', type(exc).__name__)
         channels = await self.repository.channels()
         self.channel_by_id = {c['id']: c for c in channels}
         for channel in channels:
@@ -170,10 +174,6 @@ class PublishingWorker:
                     await self.repository.confirmed_update(row, parts=parts, status=status, error=error)
 
     async def run(self):
-        try:
-            await self.adapter.load_limits()
-        except Exception:
-            log.warning('Telegram caption limits unavailable; using conservative limit.')
         while True:
             try:
                 async with self.lock:
