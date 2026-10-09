@@ -37,6 +37,7 @@ import {
 } from "./api";
 import { describeRunFailure } from "./runFailure";
 import { useDialogFocusTrap } from "./dialogFocus";
+import { useMessageExpansion } from "./messageExpansion";
 import { isTerminalPollStatus, nextPollDelay, shouldStopPollingAfterErrors } from "./runPolling";
 import { copyRenderedSelection, copyRichText, htmlFromMarkdown, isBlankDraftBody, plainFromMarkdown, telegramMarkupFromMarkdown } from "./markdownCopy";
 import ChannelProfileDialog from "./ChannelProfileDialog";
@@ -95,15 +96,16 @@ export function StudioMessage() {
   const hasContent = useAuiState((state) => state.message.content.some((part) =>
     part.type === "text" ? Boolean(part.text.trim()) : part.type === "tool-call",
   ));
+  const { contentRef, canExpand } = useMessageExpansion(role === "assistant" && hasContent);
   // The run's Thinking indicator owns the pending state. Mount a response
   // bubble only when there is text or tool activity to show.
   if (role === "assistant" && !hasContent) return null;
 
   return (
     <MessagePrimitive.Root className="studio-message" data-role={role}>
-      {role === "assistant" && hasContent && <button type="button" className="studio-message-expand" onClick={() => setReaderOpen(true)} aria-label="Open message in wide view" title="Expand message"><i className="mgc mgc-fullscreen-2-core-regular" aria-hidden="true" /></button>}
+      {canExpand && <button type="button" className="studio-message-expand" onClick={() => setReaderOpen(true)} aria-label="Open message in wide view" title="Expand message"><i className="mgc mgc-fullscreen-2-core-regular" aria-hidden="true" /></button>}
       <MessagePrimitive.If assistant>
-        <StudioAssistantContent />
+        <div ref={contentRef}><StudioAssistantContent /></div>
       </MessagePrimitive.If>
       {readerOpen && <MessageReader onClose={() => setReaderOpen(false)}><StudioAssistantContent /></MessageReader>}
       <MessagePrimitive.If user>
