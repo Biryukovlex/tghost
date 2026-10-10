@@ -140,11 +140,15 @@ async def test_manual_draft_and_revision_sets_keep_grounding_and_owner_edits():
 
 def test_manual_accessibility_and_reduced_motion_contract_is_present():
     source = (ROOT / "studio-frontend/src/main.tsx").read_text(encoding="utf-8")
+    editor = (ROOT / "studio-frontend/src/DraftBodyEditor.tsx").read_text(encoding="utf-8")
     styles = (ROOT / "studio-frontend/src/styles.css").read_text(encoding="utf-8")
     assert ":focus-visible" in styles
     assert "prefers-reduced-motion: reduce" in styles
     # T44: Full post (not "Telegram post") in artifact label
-    assert "aria-label=\"Full post" in source
+    assert "aria-label=\"Full post" in editor
+    assert 'role="textbox"' in editor
+    assert 'aria-multiline="true"' in editor
+    assert 'aria-readonly={readOnly}' in editor
     assert "aria-label=\"Draft version\"" in source
     assert "aria-expanded={open}" in source
     assert "overflow-x: hidden" in styles

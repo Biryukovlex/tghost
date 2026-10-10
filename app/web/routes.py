@@ -589,7 +589,7 @@ def create_app(collector: Collector, settings: Settings | RuntimeSettings, works
                     "collected_comments": int(k.get("collected_comments", 0) or 0),
                     "last_poll": str(k.get("last_poll") or "") or None,
                 },
-                "last_successful_collection_at": last_successful_collection_at.isoformat() if hasattr(last_successful_collection_at, "isoformat") else (str(last_successful_collection_at) if last_successful_collection_at else None),
+                "last_successful_collection_at": last_successful_collection_at.isoformat() if last_successful_collection_at is not None and hasattr(last_successful_collection_at, "isoformat") else (str(last_successful_collection_at) if last_successful_collection_at else None),
                 "channel_metrics": cm,
                 "chart": chart,
                 "pagination": {
@@ -678,7 +678,7 @@ def create_app(collector: Collector, settings: Settings | RuntimeSettings, works
                 "collected_comments": int(k.get("collected_comments", 0) or 0),
                 "last_poll": str(k.get("last_poll") or "") or None,
             },
-            "last_successful_collection_at": last_successful_collection_at.isoformat() if hasattr(last_successful_collection_at, "isoformat") else (str(last_successful_collection_at) if last_successful_collection_at else None),
+            "last_successful_collection_at": last_successful_collection_at.isoformat() if last_successful_collection_at is not None and hasattr(last_successful_collection_at, "isoformat") else (str(last_successful_collection_at) if last_successful_collection_at else None),
             "channel_metrics": cm,
             "series": {
                 "days": ts["days"],

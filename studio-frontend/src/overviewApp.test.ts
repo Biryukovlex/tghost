@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { readFileSync } from "node:fs";
 import { JSDOM } from "jsdom";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 const appSource = readFileSync(new URL("../../app/web/static/app.js", import.meta.url), "utf8");
 const uiControlsSource = readFileSync(new URL("../../app/web/static/ui-controls.js", import.meta.url), "utf8");
@@ -18,6 +18,11 @@ type Post = {
   comments: number;
   shares: number;
 };
+
+type ChartData = { labels: string[]; datasets: Array<{ data: Array<number | null> }> };
+type ChartOptions = { scales: { y: { beginAtZero: boolean; min?: number } } };
+type ActiveElement = { datasetIndex: number; index: number };
+type ExplorerResponse = { ok: boolean; json: () => Promise<{ rows: Post[]; total: number; page: number; total_pages: number }> };
 
 const posts: Post[] = [
   { id: 1, channel_id: 1, message_id: 101, text: "AI alpha post", identifier: "@alpha", posted_at: "2026-09-01T10:00", views: 100, reactions: 4, comments: 2, shares: 1 },
@@ -89,22 +94,23 @@ function createOverview({
     <div data-explorer-count></div><div data-explorer-chips></div><nav data-explorer-pages></nav><table class="explorer-table"><tbody data-explorer-rows></tbody></table>
   </body></html>`, { url, runScripts: "outside-only", pretendToBeVisual: true });
   const { window } = dom;
-  const win = window as unknown as Window & { Chart: new (_canvas: Element, config: any) => any; matchMedia: (query: string) => { matches: boolean }; __charts: any[] };
+  const win = window as unknown as Window & { Chart: typeof ChartStub; __charts: ChartStub[] };
   Object.defineProperty(window, "matchMedia", { value: () => ({ matches: false }), configurable: true });
-  const charts: any[] = [];
+  const charts: ChartStub[] = [];
   win.__charts = charts;
-  win.Chart = class {
-    data: any;
-    options: any;
-    activeElements: any[] = [];
-    constructor(_canvas: Element, config: any) { this.data = config.data; this.options = config.options; charts.push(this); }
+  class ChartStub {
+    data: ChartData;
+    options: ChartOptions;
+    activeElements: ActiveElement[] = [];
+    constructor(_canvas: Element, config: { data: ChartData; options: ChartOptions }) { this.data = config.data; this.options = config.options; charts.push(this); }
     update() {}
-    setActiveElements(elements: any[]) { this.activeElements = elements; }
-  };
+    setActiveElements(elements: ActiveElement[]) { this.activeElements = elements; }
+  }
+  win.Chart = ChartStub;
   window.document.querySelector("[data-channel-metrics]")!.setAttribute("data-channel-metrics", JSON.stringify(channelMetrics));
   window.document.getElementById("trendChart")!.setAttribute("data-chart", JSON.stringify(chart));
   const requests: URL[] = [];
-  let releaseDelayed: ((value: any) => void) | null = null;
+  let releaseDelayed: ((value: ExplorerResponse) => void) | null = null;
   window.fetch = ((input: RequestInfo | URL) => {
     const requestUrl = new URL(String(input), window.location.href);
     requests.push(requestUrl);
@@ -121,7 +127,7 @@ function createOverview({
       return { ok: true, json: async () => ({ rows: result.slice((page - 1) * 50, page * 50), total: result.length, page, total_pages: totalPages }) };
     };
     if (requestUrl.searchParams.get("q") === delayQuery && delayQuery) {
-      return new Promise((resolve) => { releaseDelayed = resolve; });
+      return new Promise<ExplorerResponse>((resolve) => { releaseDelayed = resolve; });
     }
     return Promise.resolve(respond());
   }) as typeof window.fetch;

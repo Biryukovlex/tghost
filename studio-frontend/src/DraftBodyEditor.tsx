@@ -32,7 +32,7 @@ export function markdownFromEditable(root: Node): string {
     if (tag === "BLOCKQUOTE") return text.split("\n").map(line => `> ${line}`).join("\n");
     if (tag === "A") {
       const href = node.getAttribute("href") || "";
-      if (/^https?:\/\/[^\s\u0000-\u001f]+$/i.test(href)) return `[${text}](${href})`;
+      if (/^https?:\/\/\S+$/i.test(href) && !Array.from(href).some(char => char.charCodeAt(0) < 0x20)) return `[${text}](${href})`;
     }
     return text;
   };

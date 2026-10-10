@@ -221,6 +221,7 @@ class Collector:
     async def poll_channel(self, ch: Any, job_id: Any = None) -> tuple[int, int, int, int, int, int]:
         """Scan one channel. Return post, snapshot, and comment collection counts."""
 
+        assert self.client is not None, "Telegram client is required to poll channels"
         entity = await self.resolve_entity(ch["identifier"])
         subscribers = None
         if getattr(self.db, "capture_channel_metrics", None) is not None:
@@ -272,7 +273,6 @@ class Collector:
         seen = written = comments_seen = comments_written = comments_deleted = comment_errors = 0
         seen_message_ids: list[int] = []
         last_renew = time.monotonic()
-        assert self.client is not None, "Telegram client is required to poll channels"
         # Note: an exception escaping the loop below (e.g. FloodWaitError)
         # skips the retirement step by construction, and an empty scan is
         # skipped by the seen_message_ids guard.
