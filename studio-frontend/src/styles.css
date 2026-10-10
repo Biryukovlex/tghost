@@ -229,6 +229,8 @@ button { color: inherit; }
 .studio-draft-title-hint { display: block; margin-top: 4px; color: var(--studio-muted); font-size: 12px; font-weight: 400; letter-spacing: 0; text-transform: none; line-height: 1.4; }
 .studio-draft-editor { width: 100%; min-height: 300px; max-height: 58vh; resize: vertical; border: 1px solid rgba(149,190,203,.24); border-radius: 12px; padding: 13px; color: #efffff; background: rgba(7,19,29,.7); font-size: 14px; line-height: 1.58; outline: 0; }
 .studio-draft-editor:focus, .studio-draft-title input:focus { border-color: rgba(110,231,221,.72); box-shadow: 0 0 0 3px rgba(110,231,221,.09); }
+.studio-draft-editor[contenteditable="true"] { cursor: text; white-space: pre-wrap; }
+.studio-draft-editor[aria-readonly="true"] { cursor: default; }
 .studio-char-count { display: flex; justify-content: space-between; gap: 8px; color: var(--studio-muted); font-size: 12px; }
 .studio-char-count.is-warning { color: #f5d399; }
 .studio-char-count.is-over { color: #f6b8a9; font-weight: 800; }
@@ -337,17 +339,14 @@ button { color: inherit; }
 .studio-claim blockquote { margin: 4px 0; padding-left: 8px; border-left: 2px solid var(--studio-line); color: var(--studio-soft); font-style: italic; }
 .studio-claim-note { color: var(--studio-muted); }
 .studio-draft-preview { min-height: 300px; max-height: 58vh; overflow-y: auto; overflow-x: hidden; margin: 0; padding: 13px; border: 1px solid rgba(149,190,203,.24); border-radius: 12px; background: rgba(7,19,29,.7); color: #efffff; font-size: 14px; line-height: 1.58; }
-.studio-draft-mode { border: 1px solid var(--studio-line); border-radius: 9px; padding: 8px 10px; color: var(--studio-soft); background: rgba(110,231,221,.06); font-size: 12px; font-weight: 800; cursor: pointer; }
 .studio-copy-note { color: var(--studio-muted); font-size: 12px; }
-.studio-draft-save-group { display: inline-flex; gap: 6px; }
 .studio-draft-save { border: 1px solid rgba(110,231,221,.4); border-radius: 9px; padding: 8px 10px; color: var(--studio-accent); background: rgba(110,231,221,.08); font-size: 12px; font-weight: 800; cursor: pointer; }
 .studio-draft-save:disabled { opacity: .42; cursor: not-allowed; }
 .studio-save-state.is-unsaved { color: #f5d399; }
 .studio-draft-viewing { margin: 0; padding: 8px 10px; border: 1px solid rgba(245,211,153,.22); border-radius: 10px; background: rgba(101,74,41,.16); color: var(--studio-soft); font-size: 13px; }
-.studio-draft-mode[aria-pressed="true"] { border-color: rgba(110,231,221,.4); color: var(--studio-accent); background: rgba(110,231,221,.08); }
-.studio-draft-preview .studio-markdown p { margin: 0; }
-.studio-draft-preview .studio-markdown a { color: var(--studio-accent); }
-.studio-draft-preview .studio-markdown strong { color: #eef7f9; }
+.studio-draft-preview.studio-markdown p { margin: 0; }
+.studio-draft-preview.studio-markdown a { color: var(--studio-accent); }
+.studio-draft-preview.studio-markdown strong { color: #eef7f9; }
 
 /* Compact summary-only My channels surface. */
 .studio-my-channels { margin: 12px clamp(16px, 5vw, 66px) 0; border: 1px solid var(--studio-line); border-radius: 14px; background: rgba(16,37,52,.6); overflow: hidden; }
