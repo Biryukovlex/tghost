@@ -1,11 +1,13 @@
 # TGhost
 
+[![TGhost — Your channel’s history. Your next great post.](docs/brand/readme-banner.svg)](https://tghost.app/)
+
+[Website](https://tghost.app/) · [Quick start](#quick-start-with-docker) · [Documentation](#documentation)
+
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 Telegram analytics, an AI writing desk and a publishing calendar in one
 self-hosted workspace.
-
-![TGhost Overview: channel analytics, engagement totals and post performance](docs/screenshots/channel-overview.png)
 
 ## What you can do
 
@@ -25,6 +27,23 @@ self-hosted workspace.
 **Current scope:** a private, single-owner installation. Public hosting with
 separate user accounts is not supported yet; authentication and account
 isolation need further work before a public launch.
+
+## Product tour
+
+Illustrative demos from [tghost.app](https://tghost.app/), using a fictional
+channel and sample content.
+
+### Overview
+
+![Illustrative TGhost Overview: subscribers, typical views, ER, ERR and channel trends](docs/screenshots/tghost-overview.png)
+
+### AI Studio
+
+![Illustrative TGhost AI Studio: channel conversations, post analysis and a versioned draft workspace](docs/screenshots/tghost-studio.png)
+
+### Calendar
+
+![Illustrative TGhost Calendar: month view with published and scheduled posts for a fictional channel](docs/screenshots/tghost-calendar.png)
 
 ## Quick start with Docker
 
