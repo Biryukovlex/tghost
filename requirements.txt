@@ -7,9 +7,8 @@ jinja2>=3.1
 itsdangerous>=2.1
 python-multipart>=0.0.9
 qrcode>=7.4,<9
-# AG-UI adapter used by the disposable Studio feasibility spike. Keep this
-# exact until the dependency is reviewed against the next security release.
-pydantic-ai-slim[ag-ui,openai]==2.37.0
+# Studio agent and AG-UI adapter. Keep the reviewed security release pinned.
+pydantic-ai-slim[ag-ui,openai]==2.53.0
 # Local, provider-independent input-budget estimates (already in requirements.lock).
 tiktoken==0.14.0
 markdown-it-py==4.2.0

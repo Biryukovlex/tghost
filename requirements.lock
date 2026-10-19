@@ -12,7 +12,7 @@ click==8.4.2
 cryptography==50.0.1
 defusedxml==0.7.1
 fastapi==0.141.1
-genai-prices==0.1.6
+genai-prices==0.1.9
 greenlet==3.5.5
 griffelib==2.2.0
 h11==0.16.0
@@ -29,7 +29,7 @@ Mako==1.4.1
 MarkupSafe==3.0.3
 markdown-it-py==4.2.0
 mdurl==0.1.2
-openai==3.7.0
+openai==3.19.0
 opentelemetry-api==1.44.0
 packaging==26.3
 pyaes==1.6.1
@@ -37,9 +37,9 @@ pyasn1==0.6.4
 pycparser==3.0
 Pygments==2.21.0
 pydantic==2.13.4
-pydantic-ai-slim[ag-ui,openai]==2.37.0
+pydantic-ai-slim[ag-ui,openai]==2.53.0
 pydantic-core==2.46.4
-pydantic-graph==2.37.0
+pydantic-graph==2.53.0
 pydantic-settings==2.15.0
 python-dotenv==1.2.3
 python-multipart==0.0.32

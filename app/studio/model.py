@@ -11,8 +11,9 @@ import asyncio
 from contextlib import asynccontextmanager
 from enum import Enum
 
-from openai import APIError, APIStatusError
+from openai import APIError
 from pydantic_ai import UnexpectedModelBehavior
+from pydantic_ai.exceptions import ModelAPIError
 from pydantic_ai.models import Model
 from pydantic_ai.models.openai import OpenAIChatModel, OpenAIResponsesModel
 from pydantic_ai.models.test import TestModel
@@ -125,12 +126,12 @@ class ChatGPTPlanModel(OpenAIResponsesModel):
                     delivered = True
                     yield response
                     return
-            except APIError as exc:
+            except (APIError, ModelAPIError) as exc:
                 # The SDK retries HTTP failures, but not errors inside a 200
                 # SSE stream. Retry one transient startup failure only; once
                 # a response was exposed, a replay might duplicate tool work.
                 if (
-                    delivered or attempt or isinstance(exc, APIStatusError)
+                    delivered or attempt
                     or streaming_error_category(exc) not in {"provider_unavailable", "provider_rate_limited"}
                 ):
                     raise

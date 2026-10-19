@@ -19,7 +19,7 @@ from typing import Any
 
 from openai import APIError, APIStatusError
 from pydantic import ValidationError
-from pydantic_ai.exceptions import ModelHTTPError, UsageLimitExceeded
+from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError, UsageLimitExceeded
 
 from .model import StudioConfigurationError, StudioModelStreamError, ModelStreamFailure
 
@@ -160,6 +160,13 @@ def duration_ms(started_at: Any, finished_at: Any = None) -> int | None:
 
 def streaming_error_category(exc: BaseException) -> str | None:
     """Project OpenAI SSE errors without retaining their message or payload."""
+    # Provider adapters wrap SDK errors in ModelAPIError and preserve their
+    # typed cause. Inspect only that cause's structured error code, not prose.
+    if isinstance(exc, ModelAPIError):
+        cause = exc.__cause__
+        if not isinstance(cause, APIError):
+            return None
+        exc = cause
     if not isinstance(exc, APIError) or isinstance(exc, APIStatusError):
         return None
     body = getattr(exc, "body", None)

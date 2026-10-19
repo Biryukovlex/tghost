@@ -1,10 +1,12 @@
 import importlib.metadata
 import json
 import os
+from pathlib import Path
 import subprocess
 import sys
 
 import pytest
+from packaging.requirements import Requirement
 
 from app.config import Settings
 from app.studio.provider import run_openrouter_smoke
@@ -102,5 +104,15 @@ def test_openrouter_cli_requires_explicit_opt_in(tmp_path):
     assert result.stderr == ""
 
 
-def test_pydantic_ai_security_pin_is_exact():
-    assert importlib.metadata.version("pydantic-ai-slim") == "2.37.0"
+def test_pydantic_ai_matches_the_reviewed_exact_pin():
+    root = Path(__file__).resolve().parents[1]
+    pins = []
+    for filename in ("requirements.txt", "requirements.lock"):
+        entries = [Requirement(line) for line in (root / filename).read_text().splitlines()
+                   if line.startswith("pydantic-ai-slim[")]
+        assert len(entries) == 1
+        specifiers = list(entries[0].specifier)
+        assert len(specifiers) == 1 and specifiers[0].operator == "=="
+        assert "*" not in specifiers[0].version
+        pins.append(specifiers[0].version)
+    assert pins[0] == pins[1] == importlib.metadata.version("pydantic-ai-slim")

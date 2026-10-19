@@ -5,6 +5,7 @@ import httpx
 import pytest
 from openai import APIError
 from pydantic_ai import Agent
+from pydantic_ai.exceptions import ModelAPIError
 from pydantic_ai.providers.openai import OpenAIProvider
 
 from app.studio.diagnostics import build_run_diagnostics
@@ -73,8 +74,9 @@ async def test_startup_retry_is_bounded_and_permanent_errors_are_not_retried(cod
         return sse([error_event(code)])
     async with httpx.AsyncClient(transport=httpx.MockTransport(endpoint)) as client:
         model = ChatGPTPlanModel("fixture", provider=OpenAIProvider(api_key="synthetic", http_client=client))
-        with pytest.raises(APIError) as raised:
+        with pytest.raises(ModelAPIError) as raised:
             await Agent(model).run("Synthetic request")
+    assert isinstance(raised.value.__cause__, APIError)
     assert calls == attempts
     assert safe_error(raised.value)[0] == category
     assert "synthetic-secret" not in str(build_run_diagnostics(raised.value))
@@ -90,8 +92,9 @@ async def test_error_after_stream_delivery_never_retries():
         return sse([*completed_events()[:-1], error_event("server_error")])
     async with httpx.AsyncClient(transport=httpx.MockTransport(endpoint)) as client:
         model = ChatGPTPlanModel("fixture", provider=OpenAIProvider(api_key="synthetic", http_client=client))
-        with pytest.raises(APIError):
+        with pytest.raises(ModelAPIError) as raised:
             await Agent(model).run("Synthetic request")
+    assert isinstance(raised.value.__cause__, APIError)
     assert calls == 1
 
 
