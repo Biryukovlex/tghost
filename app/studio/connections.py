@@ -6,6 +6,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import secrets
 import time
 import uuid
@@ -254,8 +255,22 @@ async def available_models(settings, provider: str, *, ollama_url: str | None = 
             response.raise_for_status()
             if len(response.content) > 512_000:
                 raise ValueError("Model catalog too large")
-            return [{"id": item["slug"], "name": item.get("display_name", item["slug"])} for item in response.json().get("models", [])[:200]
-                    if item.get("visibility") == "list" and isinstance(item.get("slug"), str)]
+            payload = response.json()
+            # ChatGPT account catalogs use models/slug; the public Models API
+            # uses data/id. Neither format should lose entries to a UI limit.
+            entries = payload.get("models", payload.get("data")) if isinstance(payload, dict) else None
+            if not isinstance(entries, list):
+                raise ValueError("Invalid model catalog")
+            models: dict[str, dict[str, str]] = {}
+            for item in entries:
+                if not isinstance(item, dict) or item.get("visibility", "list") != "list":
+                    continue
+                model_id = item.get("slug", item.get("id"))
+                if not isinstance(model_id, str) or not re.fullmatch(r"[^\s]{1,200}", model_id):
+                    continue
+                name = item.get("display_name")
+                models.setdefault(model_id, {"id": model_id, "name": name if isinstance(name, str) and name else model_id})
+            return list(models.values())
     raise ValueError("Unknown provider")
 
 

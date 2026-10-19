@@ -415,7 +415,7 @@
           {% set chat_model = values.openai_model if values.openai_model is defined else ws_dict['studio.openai_model'].value %}
           <select data-ui-dropdown id="openai-model" name="openai_model" aria-label="ChatGPT model"><option value="{{ chat_model }}">{{ chat_model or 'Connect ChatGPT, then load models' }}</option></select>
           {% if errors.openai_model %}<p class="field-error">{{ errors.openai_model }}</p>{% endif %}
-          <button type="button" class="btn ghost small" data-load-models="openai">Refresh models</button>
+          <button type="button" class="btn ghost small" data-load-models="openai" data-models-connected="{{ 'true' if ws_dict['studio.openai_oauth'].set else 'false' }}">Refresh models</button>
           </div>
         </div>
       </div>

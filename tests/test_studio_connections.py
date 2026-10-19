@@ -215,6 +215,11 @@ async def test_settings_owner_csrf_catalog_and_callback(app, client, settings, m
     await client.post('/login',data={'username':settings.admin_username,'password':settings.admin_password})
     page = await client.get('/settings')
     assert 'Continue with ChatGPT' in page.text
+    assert 'data-models-connected="false"' in page.text
+    await store.set('studio.openai_oauth', json.dumps(record()))
+    connected_page = await client.get('/settings')
+    assert 'data-models-connected="true"' in connected_page.text
+    assert 'synthetic-access' not in connected_page.text
     csrf = re.search('name="csrf_token" value="([^"]+)"',page.text).group(1)
     assert (await client.post('/settings/providers/openai/connect')).status_code == 403
     assert (await client.post('/settings/providers/openai/disconnect')).status_code == 403
@@ -321,3 +326,36 @@ async def test_connect_uses_fixed_loopback_and_member_cannot_manage_accounts(app
         app.state.workspace_context = replace(app.state.workspace_context, role='member')
         assert (await client.get('/settings/providers/models?provider=ollama')).status_code == 403
         assert (await client.post('/settings/providers/openai/disconnect',data={'csrf_token':csrf})).status_code == 403
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shape", ["account", "api"])
+async def test_openai_catalog_keeps_all_available_models_and_provider(monkeypatch, shape):
+    settings = Settings(studio_provider="ollama", studio_openai_oauth=json.dumps(record()))
+    entries = [{"slug" if shape == "account" else "id": f"synthetic-{i}",
+                "display_name": f"Synthetic {i}"} for i in range(251)]
+    entries += [entries[0], None, "invalid", {}, {"id": "bad id"},
+                {"slug": "hidden-model", "visibility": "hide"},
+                {"slug": "bad-name", "display_name": None}]
+    async def endpoint(request):
+        assert str(request.url) == c.RESOURCE + "/models"
+        assert request.headers["authorization"] == "Bearer synthetic-access"
+        return httpx.Response(200, json={"models" if shape == "account" else "data": entries})
+    client_class = httpx.AsyncClient
+    monkeypatch.setattr(c.httpx, "AsyncClient", lambda **kwargs: client_class(transport=httpx.MockTransport(endpoint), **kwargs))
+    models = await c.available_models(settings, "openai")
+    assert len(models) == 252
+    assert models[250] == {"id": "synthetic-250", "name": "Synthetic 250"}
+    assert models[-1] == {"id": "bad-name", "name": "bad-name"}
+    assert settings.studio_provider == "ollama"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload", [{}, {"models": {}}, [], {"data": None}])
+async def test_openai_catalog_rejects_invalid_envelopes(monkeypatch, payload):
+    settings = Settings(studio_provider="openai", studio_openai_oauth=json.dumps(record()))
+    client_class = httpx.AsyncClient
+    monkeypatch.setattr(c.httpx, "AsyncClient", lambda **kwargs: client_class(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, json=payload)), **kwargs))
+    with pytest.raises(ValueError, match="Invalid model catalog"):
+        await c.available_models(settings, "openai")
