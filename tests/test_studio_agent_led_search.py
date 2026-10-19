@@ -11,14 +11,6 @@ from app.config import Settings
 from app.studio.research import ResearchService
 from app.studio.search import SearchQuery, SearchResponse, SearchResult, SearXNGSearchProvider
 from app.studio.sources import SafeSourceReader
-from app.studio.agent import workflow_tool_sequence
-
-
-def test_search_does_not_force_a_declined_draft_or_misread_post_analysis():
-    assert workflow_tool_sequence("Найди истории, пока без черновика") == ("get_channel_context", "search_web")
-    assert "create_draft" not in workflow_tool_sequence("Проанализируй лучшие посты")
-    assert workflow_tool_sequence("Подготовь пост по найденным источникам без нового поиска") == ()
-    assert () == workflow_tool_sequence("Подготовь пост, не делай заявлений о бенчмарках")
 
 
 class ParallelProvider:

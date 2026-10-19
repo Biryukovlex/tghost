@@ -206,7 +206,7 @@ async def test_source_catalog_can_be_discovered_and_paged_without_known_ids():
     assert "source_ids=[]" in unknown["continuation"]
     for other in [dict(workspace_id="other", conversation_id="c", channel_id=1), dict(workspace_id="w", conversation_id="other", channel_id=1)]:
         assert (await service.source_page(**other, source_ids=[]))["sources"] == []
-    deps = StudioDeps(repository=MemoryStudioRepository(), **scope, research=service, cancel_event=asyncio.Event(), required_tools=("get_research_sources",))
+    deps = StudioDeps(repository=MemoryStudioRepository(), **scope, research=service, cancel_event=asyncio.Event())
     model = TestModel(call_tools=["get_research_sources"], custom_output_text="Three saved sources were read.")
     result = await build_agent(Settings(studio_test_mode=True), model=model).run("Прочитал источники?", deps=deps)
     assert result.output == "Three saved sources were read."
@@ -215,9 +215,8 @@ async def test_source_catalog_can_be_discovered_and_paged_without_known_ids():
 
 @pytest.mark.asyncio
 async def test_read_status_recovers_from_unknown_ids_before_accepting_an_answer():
-    from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart, RetryPromptPart
+    from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart, ToolReturnPart
     from pydantic_ai.models.function import FunctionModel
-    from app.studio.agent import workflow_tool_sequence
     from app.studio.sources import SourceDocument
     class Reader:
         async def read(self, url):
@@ -231,13 +230,12 @@ async def test_read_status_recovers_from_unknown_ids_before_accepting_an_answer(
         if len(calls) == 1:
             return ModelResponse(parts=[ToolCallPart("get_research_sources", {"source_ids": ["unknown"]})])
         if len(calls) == 2:
-            return ModelResponse(parts=[TextPart("No evidence was checked.")])
-        if len(calls) == 3:
-            assert any(isinstance(part, RetryPromptPart) for message in messages for part in message.parts)
+            results = [part.content for message in messages for part in message.parts if isinstance(part, ToolReturnPart)]
+            assert "source_ids=[]" in results[-1]["continuation"]
             return ModelResponse(parts=[ToolCallPart("get_research_sources", {"source_ids": [], "include_content": True})])
         return ModelResponse(parts=[TextPart("One saved article has been read.")])
-    deps = StudioDeps(repository=MemoryStudioRepository(), **scope, research=research, cancel_event=asyncio.Event(), required_tools=workflow_tool_sequence("Прочитал источники?"))
+    deps = StudioDeps(repository=MemoryStudioRepository(), **scope, research=research, cancel_event=asyncio.Event())
     result = await build_agent(Settings(studio_test_mode=True), model=FunctionModel(model)).run("Прочитал источники?", deps=deps)
     assert result.output == "One saved article has been read."
-    assert len(calls) == 4
+    assert len(calls) == 3
     assert deps.completed_tools == {"get_research_sources"}

@@ -8,7 +8,7 @@ from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 
 from app.config import Settings
-from app.studio.agent import StudioDeps, build_agent, workflow_tool_sequence
+from app.studio.agent import StudioDeps, build_agent
 from app.studio.drafts import DraftValidationError
 from app.studio.repository import MemoryStudioRepository, StudioRepository
 
@@ -84,11 +84,6 @@ async def test_tools_are_scoped_to_chat_and_visibility_changes_after_creation():
     result = await tools["get_draft"].function(ctx)
     assert result["draft"]["body"] == "Post"
     assert "draft_id" not in tools["get_draft"].tool_def.parameters_json_schema["properties"]
-
-
-def test_draft_requests_are_not_routed_by_keyword_regexes():
-    assert workflow_tool_sequence("Read the draft title and explain it") == ()
-    assert workflow_tool_sequence("Write a draft, do not search") == ()
 
 
 @pytest.mark.integration

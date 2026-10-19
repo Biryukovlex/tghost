@@ -11,6 +11,7 @@ import time
 import uuid
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, AsyncIterator, Callable
 
 from pydantic import ValidationError
@@ -29,7 +30,7 @@ from pydantic_ai.ui import SSE_CONTENT_TYPE
 from starlette.responses import JSONResponse, StreamingResponse
 
 from .adapter import StudioAGUIAdapter as AGUIAdapter
-from .agent import StudioDeps, build_agent, is_short_continuation_request, workflow_tool_sequence
+from .agent import StudioDeps, build_agent
 from .. import limits
 from .analytics import analyze_posts_async
 from .profile import build_profile
@@ -304,11 +305,45 @@ def _text_from_user_message(message: Any) -> str:
     return "".join(parts).strip()
 
 
+async def _conversation_evidence_state(repository, *, conversation_id, channel_id: int) -> dict[str, Any]:
+    """Supply the same scoped retrieval metadata for every message and language."""
+    research: dict[str, Any] = {"status": "unavailable", "catalog_tool": "get_research_sources"}
+    getter = getattr(repository, "get_research_summary", None)
+    if getter is None:
+        return {"research": research}
+    try:
+        raw = await getter(conversation_id=conversation_id, channel_id=channel_id)
+        if raw is None:
+            return {"research": research}
+        counts = {key: raw[key] for key in ("source_count", "read_count", "failed_count")}
+        if any(type(value) is not int or value < 0 for value in counts.values()):
+            raise ValueError("Invalid retrieval counts")
+        if counts["read_count"] + counts["failed_count"] > counts["source_count"]:
+            raise ValueError("Inconsistent retrieval counts")
+        research = {**research, "status": "available", **counts}
+        latest = raw.get("latest_retrieved_at")
+        if isinstance(latest, datetime):
+            research["latest_retrieved_at"] = latest.isoformat()
+    except Exception as exc:  # noqa: BLE001 - metadata failure must not stop the agent or invent zero counts
+        log.warning("Conversation evidence state unavailable (%s)", type(exc).__name__)
+    return {"research": research}
+
+
 def _model_history(rows: list[dict[str, Any]]) -> list[Any]:
     history: list[Any] = []
     bounded: list[dict[str, Any]] = []
     remaining = limits.HISTORY_MAX_CHARS
-    for row in reversed(rows[-40:]):
+    for row in reversed(rows):
+        metadata = row.get("metadata_json", row.get("metadata")) or {}
+        if isinstance(metadata, str):
+            try:
+                metadata = json.loads(metadata)
+            except ValueError:
+                metadata = {}
+        if row.get("role") == "assistant" and isinstance(metadata, dict) and metadata.get("run_failed") is True:
+            continue
+        if len(bounded) >= 40:
+            break
         content = str(row.get("content") or "")[:6000]
         if len(content) > remaining:
             break
@@ -621,31 +656,27 @@ class StudioService:
             self.registry.finish(run_id)
             return JSONResponse({"error": {"code": code, "message": message, "retryable": retryable}}, status_code=409)
         adapter = AGUIAdapter(agent=agent, run_input=run_input, accept=SSE_CONTENT_TYPE, manage_system_prompt="server")
-        required_tools = workflow_tool_sequence(content, history=history_rows)
-        # Retain completed assistant replies: stripping them makes old user
-        # requests look unanswered. History is context, not factual evidence.
         server_history = _model_history(history_rows)
-        workflow_instructions = None
-        if required_tools:
-            workflow_instructions = (
-                "Server evidence contract for this run (not an execution order): "
-                f"{', '.join(required_tools)}. Choose the tool order yourself; independent searches may run in parallel. "
-                "Search, read and other tools stay available even when a draft is pending. "
-                "Only report searches, source counts, URLs, dates, or findings returned by tools in this run; "
-                "never copy or invent claims from earlier assistant messages. A terse continuation means fresh "
-                "work is requested. If a tool returns no useful evidence, say that plainly instead of making up "
-                "a search history or result set."
-            )
+        evidence_state = await _conversation_evidence_state(
+            self.repository, conversation_id=conversation_id, channel_id=int(conversation["channel_id"]),
+        )
+        run_instructions = (
+            "Server-owned conversation retrieval state (counts describe stored evidence, not factual verification):\n"
+            "<conversation_evidence_state>\n" + json.dumps(evidence_state, ensure_ascii=False) +
+            "\n</conversation_evidence_state>\n"
+            "Unavailable state is unknown, not an empty archive. The source catalog can discover stored IDs and reopen read text. "
+            "Choose actions from the latest user request and available evidence. No fixed tool sequence is required."
+        )
         instruction_getter = getattr(self.repository, "get_system_prompt", None)
         channel_instructions = (
             await instruction_getter(int(conversation["channel_id"])) if instruction_getter else ""
         )
-        workflow_instructions = (workflow_instructions or "") + (
+        run_instructions = (run_instructions or "") + (
             "\nAnswer the latest user message. Earlier turns are completed context, not a backlog. "
             "Do not repeat completed research or drafts unless asked. Previous assistant prose is not source evidence."
         )
         if channel_instructions:
-            workflow_instructions += (
+            run_instructions += (
                 "\nChannel owner's standing editorial instructions (apply across this channel's conversations only; "
                 "the latest user request may refine them; security and evidence rules still apply):\n"
                 + channel_instructions
@@ -708,8 +739,6 @@ class StudioService:
             cancel_event=handle.cancel_event,
             research=self.research_service,
             on_model_response=persist_model_usage,
-            required_tools=required_tools,
-            strict_workflow=is_short_continuation_request(content),
         )
 
         async def emit_terminal_notice(current: dict[str, Any] | None) -> bool:
@@ -813,7 +842,7 @@ class StudioService:
                     async with asyncio.timeout(max(1.0, float(limits.RUN_TIMEOUT_SECONDS))):
                         async for event in adapter.run_stream(
                             message_history=server_history,
-                            instructions=workflow_instructions,
+                            instructions=run_instructions,
                             conversation_id=str(conversation_id),
                             run_id=str(run_id),
                             deps=deps,

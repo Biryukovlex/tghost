@@ -111,7 +111,7 @@ async def test_existing_artifact_does_not_force_a_tool_from_keywords(monkeypatch
             pass
 
         async def run_stream(self, **kwargs):
-            seen.append(kwargs["deps"].required_tools)
+            seen.append(kwargs["instructions"])
             yield RunStartedEvent(thread_id=kwargs["conversation_id"], run_id=kwargs["run_id"])
             await kwargs["on_complete"](SimpleNamespace(output="Revision handled.", usage=None, response=None))
             yield RunFinishedEvent(thread_id=kwargs["conversation_id"], run_id=kwargs["run_id"])
@@ -133,7 +133,9 @@ async def test_existing_artifact_does_not_force_a_tool_from_keywords(monkeypatch
     async for _ in response.body_iterator:
         pass
 
-    assert seen == [()]
+    assert len(seen) == 1
+    assert "Server evidence contract" not in seen[0]
+    assert "<conversation_evidence_state>" in seen[0]
 
 
 @pytest.mark.asyncio

@@ -58,6 +58,7 @@ async def test_change_request_is_not_rewritten_into_a_server_tool_contract(monke
 
         def __init__(self, **kwargs):
             captured["agent"] = kwargs.get("agent")
+            captured["run_input"] = kwargs["run_input"]
 
         async def run_stream(self, **kwargs):
             captured["deps"] = kwargs.get("deps")
@@ -82,12 +83,12 @@ async def test_change_request_is_not_rewritten_into_a_server_tool_contract(monke
             pass
         deps = captured.get("deps")
         assert deps is not None, "adapter was not invoked"
-        return deps.required_tools
+        return captured["run_input"].messages[0].content
 
     # Draft words and edit requests no longer rewrite the tool contract.
-    assert () == await contract_for("Add bold title and subtitles in the draft")
+    assert "Add bold title and subtitles in the draft" == await contract_for("Add bold title and subtitles in the draft")
     for message in ("Make it shorter and drop the emoji", "Сделай короче и убери эмодзи", "Add a subtitle before the second paragraph", "Убери подпись в конце"):
         tools = await contract_for(message)
-        assert tools == (), (message, tools)
+        assert tools == message, (message, tools)
     # Without a change request nothing is forced.
-    assert "revise_draft" not in await contract_for("thanks, looks good")
+    assert "thanks, looks good" == await contract_for("thanks, looks good")

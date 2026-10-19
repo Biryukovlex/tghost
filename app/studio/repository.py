@@ -260,6 +260,7 @@ class StudioRepositoryProtocol(Protocol):
     async def choose_draft_version(self, *, draft_id: uuid.UUID, version: int, expected_revision: int) -> dict[str, Any]: ...
     async def mark_draft_copied(self, *, draft_id: uuid.UUID) -> dict[str, Any]: ...
     async def persist_research_bundle(self, *, conversation_id: uuid.UUID, channel_id: int, bundle: dict[str, Any]) -> dict[str, int]: ...
+    async def get_research_summary(self, *, conversation_id: uuid.UUID, channel_id: int) -> dict[str, Any] | None: ...
     async def get_research_bundle(self, *, conversation_id: uuid.UUID, channel_id: int) -> dict[str, Any] | None: ...
     async def get_research_sources(self, *, conversation_id: uuid.UUID, channel_id: int, source_ids: list[str]) -> list[dict[str, Any]]: ...
     async def record_research_event(self, *, conversation_id: uuid.UUID, channel_id: int, event: dict[str, Any]) -> dict[str, Any]: ...
@@ -1477,6 +1478,23 @@ class StudioRepository:
             row["metadata"] = row.pop("metadata_json", {}) or {}
             rows.append(row)
         return rows
+
+    async def get_research_summary(self, *, conversation_id: uuid.UUID, channel_id: int) -> dict[str, Any] | None:
+        """Read retrieval state without loading article bodies or tool history."""
+        result = await self.db._execute(
+            """SELECT COUNT(s.id) AS source_count,
+                      COUNT(s.id) FILTER (WHERE s.accessible AND s.status='ok' AND octet_length(s.content)>0) AS read_count,
+                      COUNT(s.id) FILTER (WHERE NOT s.accessible OR s.status<>'ok') AS failed_count,
+                      MAX(s.retrieved_at) AS latest_retrieved_at
+                 FROM studio_conversations c
+                 LEFT JOIN studio_sources s ON s.workspace_id=c.workspace_id
+                      AND s.conversation_id=c.id AND s.channel_id=c.channel_id
+                WHERE c.workspace_id=:workspace_id AND c.id=:conversation_id AND c.channel_id=:channel_id
+                GROUP BY c.id""",
+            {"conversation_id": conversation_id, "channel_id": int(channel_id)},
+        )
+        row = result.mappings().first()
+        return dict(row) if row is not None else None
 
     async def get_research_bundle(self, *, conversation_id: uuid.UUID, channel_id: int) -> dict[str, Any] | None:
         """Reload the latest normalized research bundle after process restart."""
@@ -2910,6 +2928,19 @@ class MemoryStudioRepository:
         bundle = await self.get_research_bundle(conversation_id=conversation_id, channel_id=channel_id)
         wanted = set(source_ids[:20])
         return [row for row in (bundle or {}).get("sources", []) if row.get("source_id") in wanted]
+
+    async def get_research_summary(self, *, conversation_id: uuid.UUID, channel_id: int) -> dict[str, Any] | None:
+        conversation = self.conversations.get(conversation_id)
+        if conversation is None or int(conversation["channel_id"]) != int(channel_id):
+            return None
+        sources = list(self.research.get(conversation_id, {}).get("sources", {}).values())
+        retrieved = [_datetime(source.get("retrieved_at")) for source in sources]
+        return {
+            "source_count": len(sources),
+            "read_count": sum(bool(source.get("content") and source.get("accessible", True) and source.get("status", "ok") == "ok") for source in sources),
+            "failed_count": sum(not source.get("accessible", True) or source.get("status", "ok") != "ok" for source in sources),
+            "latest_retrieved_at": max((value for value in retrieved if value is not None), default=None),
+        }
 
     async def get_research_bundle(self, *, conversation_id: uuid.UUID, channel_id: int) -> dict[str, Any] | None:
         conversation = self.conversations.get(conversation_id)
