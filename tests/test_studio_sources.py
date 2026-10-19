@@ -134,3 +134,68 @@ async def test_source_reader_total_timeout_returns_inaccessible_state():
     document = await reader.read("http://127.0.0.1:8765/slow")
     assert document.status == "inaccessible"
     assert document.provenance["error_code"] == "source_timeout"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("initial", ["https://news.test/story/", "https://news.test/story"])
+async def test_source_reader_preserves_trailing_slash_when_fetching_and_following_redirects(initial):
+    paths = []
+    def handler(request):
+        paths.append(request.url.path)
+        assert request.headers["host"] == "news.test"
+        assert request.extensions["sni_hostname"] == "news.test"
+        if request.url.path == "/story":
+            return httpx.Response(301, headers={"location": "/story/"})
+        return httpx.Response(200, headers={"content-type": "text/html"},
+                              text="<title>News</title><article>The article body is readable.</article>")
+    reader = SafeSourceReader(transport=httpx.MockTransport(handler), resolver=_resolver({}))
+    document = await reader.read(initial)
+    assert document.status == "ok"
+    assert "article body" in document.text
+    assert paths == (["/story", "/story/"] if initial.endswith("/story") else ["/story/"])
+    assert document.canonical_url == "https://news.test/story"
+
+
+@pytest.mark.asyncio
+async def test_source_reader_preserves_routing_path_and_query_but_deduplicates_source_identity():
+    def handler(request):
+        assert request.url.path == "/a//b/"
+        assert request.url.query == b"z=2&utm_route=article&a=1"
+        return httpx.Response(200, headers={"content-type": "text/plain"}, text="Article body")
+    reader = SafeSourceReader(transport=httpx.MockTransport(handler), resolver=_resolver({}))
+    document = await reader.read("https://news.test/a//b/?z=2&utm_route=article&a=1#section")
+    assert document.status == "ok"
+    assert document.canonical_url == "https://news.test/a/b?a=1&z=2"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("html", ["<title>MSN</title><script>articleData()</script>", "<script>app()</script>"])
+async def test_source_reader_does_not_call_an_html_shell_a_read_article(html):
+    reader = SafeSourceReader(transport=httpx.MockTransport(lambda request: httpx.Response(
+        200, headers={"content-type": "text/html"}, text=html)), resolver=_resolver({}))
+    document = await reader.read("https://news.test/story/")
+    assert document.status == "inaccessible"
+    assert not document.accessible and not document.text
+    assert document.status_code == 200
+    assert document.provenance["error_code"] == "source_content_empty"
+
+
+@pytest.mark.asyncio
+async def test_source_reader_keeps_http_error_status_for_the_agent():
+    reader = SafeSourceReader(transport=httpx.MockTransport(lambda request: httpx.Response(401)), resolver=_resolver({}))
+    document = await reader.read("https://news.test/story/")
+    assert document.status == "inaccessible"
+    assert document.status_code == 401
+    assert document.provenance["status_code"] == 401
+
+
+@pytest.mark.asyncio
+async def test_source_reader_still_bounds_real_redirect_loops():
+    paths = []
+    def handler(request):
+        paths.append(request.url.path)
+        return httpx.Response(302, headers={"location": "/b/" if request.url.path == "/a/" else "/a/"})
+    reader = SafeSourceReader(transport=httpx.MockTransport(handler), resolver=_resolver({}), max_redirects=3)
+    document = await reader.read("https://news.test/a/")
+    assert document.provenance["error_code"] == "source_redirect_limit"
+    assert paths == ["/a/", "/b/", "/a/", "/b/"]

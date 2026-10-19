@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from inspect import isawaitable
 from typing import Any, Awaitable, Callable, Iterable
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import httpx
 from html.parser import HTMLParser
@@ -268,7 +268,7 @@ class SafeSourceReader:
         self.allow_private_for_tests = bool(allow_private_for_tests)
 
     def validate_url(self, value: str) -> str:
-        """Validate syntax and return a canonical web URL, or raise safely."""
+        """Validate a request URL without changing its routing path or query."""
 
         raw = str(value or "").strip()
         canonical = canonicalize_url(raw)
@@ -277,7 +277,10 @@ class SafeSourceReader:
         parsed = urlsplit(canonical)
         if parsed.username or parsed.password or parsed.hostname is None:
             raise SSRFBlockedError("source_ssrf_blocked", "The source URL is not allowed.")
-        return canonical
+        # Canonicalization is for source identity, not HTTP routing. In
+        # particular, sites may require the trailing slash we deduplicate.
+        original = urlsplit(raw)
+        return urlunsplit((parsed.scheme, parsed.netloc, original.path or "/", original.query, ""))
 
     async def _resolve_and_validate(self, url: str) -> str:
         canonical, _address = await self._resolve_target(url)
@@ -309,7 +312,7 @@ class SafeSourceReader:
             raise SSRFBlockedError("source_ssrf_blocked", "The source host resolves to a private or reserved network.")
         return canonical, addresses[0]
 
-    def _blocked_document(self, original: str, *, code: str, message: str, status: str = "blocked") -> SourceDocument:
+    def _blocked_document(self, original: str, *, code: str, message: str, status: str = "blocked", status_code: int | None = None) -> SourceDocument:
         canonical = canonicalize_url(original)
         now = _now()
         return SourceDocument(
@@ -318,9 +321,11 @@ class SafeSourceReader:
             final_url=canonical,
             status=status,
             accessible=False,
+            status_code=status_code,
             fetched_at=now,
             warnings=(message,),
-            provenance={"status": status, "error_code": code, "retrieved_at": _iso(now)},
+            provenance={"status": status, "error_code": code, "retrieved_at": _iso(now),
+                        **({"status_code": status_code} if status_code is not None else {})},
         )
 
     async def read(self, url: str) -> SourceDocument:
@@ -374,7 +379,7 @@ class SafeSourceReader:
                         redirects += 1
                         continue
                     if response.status_code < 200 or response.status_code >= 300:
-                        return self._blocked_document(original, code="source_http_error", message="The source returned an inaccessible response.", status="inaccessible")
+                        return self._blocked_document(original, code="source_http_error", message=f"The source returned HTTP {response.status_code}.", status="inaccessible", status_code=response.status_code)
                     content_type = _mime(response.headers.get("content-type", ""))
                     if content_type not in _ALLOWED_MIME:
                         return self._blocked_document(original, code="source_type_unsupported", message="The source content type is not supported.", status="unsupported")
@@ -417,6 +422,10 @@ class SafeSourceReader:
                     else:
                         title = safe_title
                     safe_text = safe_text[: self.max_chars]
+                    if content_type in {"text/html", "application/xhtml+xml"} and safe_text.strip() in {"", title.strip()}:
+                        return self._blocked_document(original, code="source_content_empty",
+                            message="The page returned no readable article text; it may require JavaScript or a different source.",
+                            status="inaccessible", status_code=response.status_code)
                     source_hash = digest.hexdigest()
                     final_canonical = canonicalize_url(current) or current
                     source_id = hashlib.sha256(f"{final_canonical}:{source_hash}".encode("utf-8")).hexdigest()[:24]
@@ -424,7 +433,7 @@ class SafeSourceReader:
                     warnings = ("Source text contained instruction-like content; it was excluded from the model-facing excerpt.",) if injection_flags else ()
                     return SourceDocument(
                         url=original,
-                        canonical_url=canonical,
+                        canonical_url=canonicalize_url(canonical),
                         final_url=final_canonical,
                         status="ok",
                         accessible=True,
