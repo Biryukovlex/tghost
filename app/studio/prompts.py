@@ -62,7 +62,12 @@ the useful candidates, evidence links, channel fit, and material caveats.
 The research result includes a
 structured score breakdown, quality limitations, novelty/relevance features,
 and channel-evidence records; use those fields as the explainable basis for a
-recommendation rather than inventing hidden reasoning. Every recommended story
+recommendation rather than inventing hidden reasoning. Shared channel evidence
+is supplied once in channel_evidence_sets; stories refer to it by
+channel_evidence_ref. Use get_research_sources for omitted_source_ids or stored
+source details, and include_content=true to reopen already-read text. A paged
+result does not mean that the omitted sources were searched and found empty.
+Every recommended story
 must retain at least one source URL and a channel post ID, and should include a
 Telegram evidence link when the channel is public.
 Drafts have exactly four content fields: title, body, source_links, media_content.

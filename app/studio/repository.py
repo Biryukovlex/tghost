@@ -261,6 +261,7 @@ class StudioRepositoryProtocol(Protocol):
     async def mark_draft_copied(self, *, draft_id: uuid.UUID) -> dict[str, Any]: ...
     async def persist_research_bundle(self, *, conversation_id: uuid.UUID, channel_id: int, bundle: dict[str, Any]) -> dict[str, int]: ...
     async def get_research_bundle(self, *, conversation_id: uuid.UUID, channel_id: int) -> dict[str, Any] | None: ...
+    async def get_research_sources(self, *, conversation_id: uuid.UUID, channel_id: int, source_ids: list[str]) -> list[dict[str, Any]]: ...
     async def record_research_event(self, *, conversation_id: uuid.UUID, channel_id: int, event: dict[str, Any]) -> dict[str, Any]: ...
     async def list_research_events(self, *, conversation_id: uuid.UUID, channel_id: int, limit: int = 50) -> list[dict[str, Any]]: ...
     async def create_run(self, *, conversation_id: uuid.UUID, user_message_id: int, requested_model: str, provider: str = "openrouter", run_id: uuid.UUID | None = None) -> dict[str, Any]: ...
@@ -1456,6 +1457,26 @@ class StudioRepository:
                 )
             await session.commit()
         return {"sources": len(sources), "stories": len(stories)}
+
+    async def get_research_sources(self, *, conversation_id: uuid.UUID, channel_id: int, source_ids: list[str]) -> list[dict[str, Any]]:
+        """Read a bounded page even after its records leave the process cache."""
+        result = await self.db._execute(
+            """SELECT s.* FROM studio_sources s
+               WHERE s.workspace_id=:workspace_id AND s.conversation_id=:conversation_id
+                 AND s.channel_id=:channel_id AND s.id=ANY(CAST(:source_ids AS text[]))
+                 AND EXISTS (SELECT 1 FROM studio_conversations c
+                     WHERE c.workspace_id=s.workspace_id AND c.id=s.conversation_id
+                       AND c.channel_id=s.channel_id AND c.archived_at IS NULL)""",
+            {"workspace_id": self.workspace_id, "conversation_id": conversation_id,
+             "channel_id": int(channel_id), "source_ids": source_ids[:20]},
+        )
+        rows = []
+        for item in result.mappings().all():
+            row = dict(item)
+            row["source_id"] = row.pop("id")
+            row["metadata"] = row.pop("metadata_json", {}) or {}
+            rows.append(row)
+        return rows
 
     async def get_research_bundle(self, *, conversation_id: uuid.UUID, channel_id: int) -> dict[str, Any] | None:
         """Reload the latest normalized research bundle after process restart."""
@@ -2884,6 +2905,11 @@ class MemoryStudioRepository:
         state["retrieved_at"] = bundle.get("retrieved_at") or utcnow()
         state["selected_source_ids"] = list(bundle.get("selected_source_ids") or [])
         return {"sources": len(bundle.get("sources") or []), "stories": len(bundle.get("stories") or [])}
+
+    async def get_research_sources(self, *, conversation_id: uuid.UUID, channel_id: int, source_ids: list[str]) -> list[dict[str, Any]]:
+        bundle = await self.get_research_bundle(conversation_id=conversation_id, channel_id=channel_id)
+        wanted = set(source_ids[:20])
+        return [row for row in (bundle or {}).get("sources", []) if row.get("source_id") in wanted]
 
     async def get_research_bundle(self, *, conversation_id: uuid.UUID, channel_id: int) -> dict[str, Any] | None:
         conversation = self.conversations.get(conversation_id)

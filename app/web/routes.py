@@ -906,7 +906,11 @@ def create_app(collector: Collector, settings: Settings | RuntimeSettings, works
             request.session["flash_msg"] = "Configure Telegram before starting a refresh."
             return RedirectResponse("/settings#telegram", status_code=303)
         scheduler = getattr(collector, "schedule_poll", None)
-        if scheduler is not None:
+        targeted = getattr(collector, "schedule_channel_poll", None)
+        selected_channel_id = _optional_positive_int(channel)
+        if selected_channel_id and targeted is not None:
+            targeted(selected_channel_id, reason="web")
+        elif scheduler is not None:
             scheduler(reason="web")
         else:
             # Keep compatibility with a collector supplied by an older plugin;

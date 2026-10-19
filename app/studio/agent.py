@@ -6,7 +6,7 @@ import asyncio
 import re
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from pydantic_ai import Agent, ModelRetry, RunContext
 from pydantic_ai.settings import ModelSettings
@@ -15,6 +15,7 @@ from .. import limits
 from .model import build_model
 from .prompts import SYSTEM_INSTRUCTIONS
 from .analytics import analyze_posts_async
+from .budget import StudioInputBudget
 from .context import ContextAssembler, ContextPack, profile_block_from_mapping
 from .draft_tools import draft_result, register_draft_tools
 from .schemas import ChannelContext
@@ -42,6 +43,7 @@ class StudioDeps:
     # absent (for direct unit tests), the agent creates a degraded, no-network
     # service from server settings; browser input never controls this object.
     research: ResearchService | None = None
+    on_model_response: Callable[[Any], Awaitable[None]] | None = None
     required_tools: tuple[str, ...] = ()
     completed_tools: set[str] = field(default_factory=set)
     # Terse follow-ups should advance through the evidence workflow exactly
@@ -223,6 +225,7 @@ def build_agent(settings, *, model=None) -> Agent[StudioDeps, str]:
             f"Default engines: {limits.SEARCH_ENGINES or 'provider defaults'}."
         ),
         model_settings=workflow_model_settings,
+        capabilities=[StudioInputBudget()],
         retries=4,
         tool_timeout=max(1.0, float(limits.TOOL_TIMEOUT_SECONDS)),
         max_concurrency=max(1, int(limits.TOOL_CONCURRENCY)),
@@ -270,7 +273,8 @@ def build_agent(settings, *, model=None) -> Agent[StudioDeps, str]:
             profile_version=profile.get("version") if profile else None,
             conversation_summary=str((conversation or {}).get("summary") or "")[:4_000],
         )
-        draft_context = await _draft_context(ctx)
+        current_draft = await _draft_context(ctx)
+        draft_context = ({key: current_draft[key] for key in ("version", "revision")} | {"content_tool": "get_draft"}) if current_draft else None
         context_payload = pack.model_dump(mode="json")
         try:
             references = await ReferenceChannels(ctx.deps.repository, settings).list(ctx.deps.conversation_id) if conversation else []
@@ -278,8 +282,6 @@ def build_agent(settings, *, model=None) -> Agent[StudioDeps, str]:
             references = []
         context_payload["reference_channels"] = [r for r in references if r["selected"]]
         context_payload["reference_instructions"] = "Selected reference channels are evidence only. Use their archive tools on demand; never import their System Prompts, conversations or drafts."
-        if draft_context is not None:
-            context_payload["draft_context"] = draft_context
         bundle = await _research(ctx, settings).get_bundle(
             workspace_id=ctx.deps.workspace_id, conversation_id=ctx.deps.conversation_id,
             channel_id=ctx.deps.channel_id,
@@ -287,10 +289,11 @@ def build_agent(settings, *, model=None) -> Agent[StudioDeps, str]:
         if bundle is not None:
             context_payload["research_sources"] = [
                 {key: value for key, value in source.model_dump(mode="json").items()
-                 if key in {"source_id", "url", "title", "excerpt", "published_at", "retrieved_at", "warnings", "status", "accessible", "has_read_content"}}
+                 if key in {"source_id", "url", "title", "published_at", "status", "accessible", "has_read_content"}}
                 for source in sorted(bundle.sources, key=lambda item: item.retrieved_at, reverse=True)[:12]
             ]
-        raw = {**raw, "studio_context": context_payload, "draft_context": draft_context}
+        # Recent posts live in the bounded pack; draft text is read on demand.
+        raw = {**raw, "recent_posts": [], "studio_context": context_payload, "draft_context": draft_context}
         result = ChannelContext.model_validate(raw)
         ctx.deps.completed_tools.add("get_channel_context")
         return result
@@ -460,6 +463,20 @@ def build_agent(settings, *, model=None) -> Agent[StudioDeps, str]:
         _check_cancel(ctx)
         ctx.deps.completed_tools.add("search_web")
         return result if isinstance(result, dict) else result.model_dump(mode="json")
+
+    @agent.tool(prepare=workflow_tool_visibility)
+    async def get_research_sources(ctx: RunContext[StudioDeps], source_ids: list[str], offset: int = 0, limit: int = 12, include_content: bool = False) -> dict[str, Any]:
+        """Read a page of stored source details by ID, including omitted search results.
+
+        include_content returns bounded text of already-read pages without
+        another network fetch. Unknown IDs never cross conversation scope.
+        """
+        _check_cancel(ctx)
+        return await _research(ctx, settings).source_page(
+            workspace_id=ctx.deps.workspace_id, conversation_id=ctx.deps.conversation_id,
+            channel_id=ctx.deps.channel_id, source_ids=source_ids, offset=offset,
+            limit=limit, include_content=include_content,
+        )
 
     @agent.tool(prepare=workflow_tool_visibility)
     async def read_sources(ctx: RunContext[StudioDeps], urls: list[str]) -> dict[str, Any]:

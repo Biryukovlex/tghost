@@ -47,7 +47,7 @@ class ContextPack(BaseModel):
     cache_key: str
     channel: dict[str, Any] = Field(default_factory=dict)
     performance: dict[str, Any] = Field(default_factory=dict)
-    profile: Any = Field(default_factory=dict)
+    profile: Any = Field(default_factory=dict, exclude=True)
     profile_block: str = ""
     recent_posts: list[dict[str, Any]] = Field(default_factory=list)
     conversation_summary: str = ""
@@ -301,7 +301,6 @@ class ContextAssembler:
             "cache_key": key,
             "channel": safe_channel,
             "performance": performance,
-            "profile": profile_block,
             "profile_block": profile_block,
             "recent_posts": recent_posts,
             "conversation_summary": raw_summary,
@@ -329,7 +328,7 @@ class ContextAssembler:
         # The minimum budget is deliberately large enough for the structural
         # envelope. If a caller chooses an impossibly small value, retain a
         # valid pack rather than silently emitting malformed JSON.
-        pack = ContextPack.model_validate({**base, "char_count": 0})
+        pack = ContextPack.model_validate({**base, "profile": profile_block, "char_count": 0})
         # ``char_count`` is itself part of the prompt JSON. Recalculate it
         # after validation and trim once more if those digits push the final
         # representation over the advertised budget. Profile block is never dropped.

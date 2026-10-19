@@ -20,12 +20,16 @@ FROM python:3.12-slim AS runtime
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    TIKTOKEN_CACHE_DIR=/opt/tiktoken
 
 WORKDIR /app
 
 COPY requirements.txt requirements.lock ./
 RUN pip install --no-cache-dir -r requirements.lock
+# Cache the local tokenizer at build time; model requests never download it.
+RUN python -c 'import tiktoken; tiktoken.get_encoding("o200k_base")' \
+    && chmod -R a+rX /opt/tiktoken
 
 COPY app ./app
 COPY scripts ./scripts

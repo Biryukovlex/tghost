@@ -17,6 +17,11 @@ TOOL_CONCURRENCY = 6  # maximum concurrent tool executions
 MAX_TOOL_CALLS = 12  # agent tool-call budget per run
 MAX_OUTPUT_TOKENS = 8192  # cumulative output tokens across the tool loop
 CONTEXT_MAX_CHARS = 18_000  # maximum serialized evidence context for the agent
+TOOL_RESULT_MAX_CHARS = 48_000  # complete model-facing research result
+MAX_INPUT_TOKENS = 48_000  # estimated input per model request
+MAX_RUN_INPUT_TOKENS = 200_000  # cumulative input per agent run
+HISTORY_MAX_CHARS = 48_000  # recent completed chat messages
+COMMENT_RECHECK_SECONDS = 1_800  # reconcile unchanged comment threads every 30 minutes
 MAX_EVIDENCE_POSTS = 20  # bounded post evidence objects in a context pack
 MIN_PROFILE_POSTS = 5  # minimum posts before a channel profile is considered ready
 

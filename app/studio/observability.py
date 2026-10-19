@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import json
 import math
 import re
 from collections.abc import Mapping
@@ -18,7 +19,7 @@ from typing import Any
 
 from openai import APIError, APIStatusError
 from pydantic import ValidationError
-from pydantic_ai.exceptions import ModelHTTPError
+from pydantic_ai.exceptions import ModelHTTPError, UsageLimitExceeded
 
 from .model import StudioConfigurationError
 
@@ -43,6 +44,7 @@ _ERRORS: dict[str, tuple[str, bool]] = {
     "invalid_agent_output": ("The agent returned an invalid response. Try again.", True),
     "run_cancelled": ("Run cancelled by the user.", False),
     "run_interrupted": ("The worker stopped before completion.", True),
+    "run_budget_exceeded": ("The agent reached its context or run budget. Narrow the request or start a new conversation.", False),
     "agent_failed": ("The agent could not complete this run. Try again.", True),
 }
 
@@ -186,6 +188,9 @@ def streaming_error_category(exc: BaseException) -> str | None:
 def safe_error(exc: BaseException) -> tuple[str, str, bool]:
     """Classify an exception without retaining its message or payload."""
 
+    if isinstance(exc, UsageLimitExceeded):
+        message, retryable = _ERRORS["run_budget_exceeded"]
+        return "run_budget_exceeded", message, retryable
     if isinstance(exc, StudioConfigurationError):
         return "studio_not_configured", _ERRORS["studio_not_configured"][0], False
     if isinstance(exc, asyncio.CancelledError):
@@ -329,5 +334,6 @@ def emit_observation(logger: Any, kind: str, **fields: Any) -> None:
         else:
             safe[key] = _bounded_int(value)
     # ``extra`` is visible to JSON-capable logging handlers without forcing a
-    # particular production logging formatter.  The message itself is generic.
-    logger.log(level, "studio.%s", str(kind)[:40], extra={"studio_observation": safe})
+    # particular production logging formatter. Emit the same safe projection
+    # in plain text too, so the default runtime logger preserves the counters.
+    logger.log(level, "studio.%s %s", str(kind)[:40], json.dumps(safe, ensure_ascii=True, sort_keys=True), extra={"studio_observation": safe})

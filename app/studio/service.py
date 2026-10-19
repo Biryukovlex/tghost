@@ -23,6 +23,7 @@ from ag_ui.core import (
     TextMessageStartEvent,
 )
 from pydantic_ai import UsageLimits
+from pydantic_ai.usage import RunUsage
 from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
 from pydantic_ai.ui import SSE_CONTENT_TYPE
 from starlette.responses import JSONResponse, StreamingResponse
@@ -306,7 +307,7 @@ def _text_from_user_message(message: Any) -> str:
 def _model_history(rows: list[dict[str, Any]]) -> list[Any]:
     history: list[Any] = []
     bounded: list[dict[str, Any]] = []
-    remaining = 48000
+    remaining = limits.HISTORY_MAX_CHARS
     for row in reversed(rows[-40:]):
         content = str(row.get("content") or "")[:6000]
         if len(content) > remaining:
@@ -655,6 +656,7 @@ class StudioService:
         worker_id = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:12]}"
         run_started_monotonic = time.monotonic()
         usage_holder: dict[str, Any] = {}
+        run_usage = RunUsage()
         actual_model_holder: dict[str, str] = {}
         final_output_holder: dict[str, str] = {}
         observed_tool_calls = 0
@@ -665,7 +667,7 @@ class StudioService:
 
         def _run_requests() -> int:
             try:
-                return max(0, int(normalize_usage(usage_holder).get("requests", 0)))
+                return max(0, int(normalize_usage(usage_holder or run_usage).get("requests", 0)))
             except Exception:  # noqa: BLE001 - diagnostics must never crash the run
                 return 0
 
@@ -690,6 +692,14 @@ class StudioService:
                 requests=_run_requests(),
                 tool_calls=observed_tool_calls,
             )
+        async def persist_model_usage(usage: RunUsage) -> None:
+            snapshot = normalize_usage(usage, latency_ms=_run_elapsed_ms())
+            await self.repository.set_run_status(
+                run_id, status="running", stage="running", worker_id=worker_id, usage=snapshot,
+            )
+            emit_observation(log, "model", conversation_id=conversation_id, run_id=run_id,
+                             requested_model=model_name(settings), usage=snapshot)
+
         deps = StudioDeps(
             repository=self.repository,
             workspace_id=self.repository.workspace_id,
@@ -697,6 +707,7 @@ class StudioService:
             channel_id=int(conversation["channel_id"]),
             cancel_event=handle.cancel_event,
             research=self.research_service,
+            on_model_response=persist_model_usage,
             required_tools=required_tools,
             strict_workflow=is_short_continuation_request(content),
         )
@@ -710,7 +721,7 @@ class StudioService:
             code = "run_cancelled" if user_cancelled else "run_interrupted"
             message = "Run cancelled by the user." if user_cancelled else "The worker stopped before completion."
             usage = normalize_usage(
-                usage_holder,
+                usage_holder or run_usage,
                 latency_ms=int(max(0, (time.monotonic() - run_started_monotonic) * 1000)),
             )
             usage["tool_calls"] = max(int(usage.get("tool_calls", 0)), observed_tool_calls)
@@ -806,10 +817,13 @@ class StudioService:
                             conversation_id=str(conversation_id),
                             run_id=str(run_id),
                             deps=deps,
+                            usage=run_usage,
                             usage_limits=UsageLimits(
                                 request_limit=max(2, int(limits.MAX_TOOL_CALLS) + 2),
                                 tool_calls_limit=max(1, int(limits.MAX_TOOL_CALLS)),
                                 output_tokens_limit=max(64, int(limits.MAX_OUTPUT_TOKENS)),
+                                input_tokens_limit=int(limits.MAX_RUN_INPUT_TOKENS),
+                                per_request_input_tokens_limit=int(limits.MAX_INPUT_TOKENS),
                             ),
                             on_complete=capture_completion,
                         ):
@@ -830,7 +844,7 @@ class StudioService:
                             if event_type == "RUN_FINISHED":
                                 run_finished = True
                                 event_payload["usage"] = normalize_usage(
-                                    usage_holder,
+                                    usage_holder or run_usage,
                                     latency_ms=int(max(0, (time.monotonic() - run_started_monotonic) * 1000)),
                                 )
                             elif event_type == "RUN_ERROR":
@@ -868,7 +882,7 @@ class StudioService:
                                 safe_payload=event_payload,
                                 result_content=_tool_result_content(event),
                             )
-                            if event_type.startswith("TOOL_CALL_"):
+                            if event_type in {"TOOL_CALL_START", "TOOL_CALL_RESULT"}:
                                 emit_observation(
                                     log,
                                     "tool",
@@ -911,7 +925,7 @@ class StudioService:
                         metadata={"run_id": str(run_id), "prompt_version": PROMPT_VERSION},
                     )
                 usage = normalize_usage(
-                    usage_holder,
+                    usage_holder or run_usage,
                     latency_ms=int(max(0, (time.monotonic() - run_started_monotonic) * 1000)),
                 )
                 usage["tool_calls"] = max(int(usage.get("tool_calls", 0)), observed_tool_calls)
@@ -966,7 +980,7 @@ class StudioService:
                 }
                 if current and current.get("status") in {"queued", "running"}:
                     usage = normalize_usage(
-                        usage_holder,
+                        usage_holder or run_usage,
                         latency_ms=int(max(0, (time.monotonic() - run_started_monotonic) * 1000)),
                     )
                     await self.repository.append_event(run_id, event_type=event_type, safe_payload={"usage": usage, "diagnostics": cancel_diagnostics})
@@ -1006,7 +1020,7 @@ class StudioService:
                     return
                 if current and current.get("status") in {"queued", "running"}:
                     usage = normalize_usage(
-                        usage_holder,
+                        usage_holder or run_usage,
                         latency_ms=int(max(0, (time.monotonic() - run_started_monotonic) * 1000)),
                     )
                     usage["tool_calls"] = max(int(usage.get("tool_calls", 0)), observed_tool_calls)

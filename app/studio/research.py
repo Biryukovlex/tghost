@@ -12,6 +12,8 @@ never reuse another conversation's source set accidentally.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import re
 import uuid
 from dataclasses import dataclass, field, replace
@@ -90,7 +92,7 @@ def _source_for_agent(source: SourceEvidence) -> dict[str, Any]:
             "query",
         )
     } | {
-        "excerpt": str(value.get("excerpt") or "")[:1_500],
+        "excerpt": str(value.get("excerpt") or "")[:400],
         "has_read_content": bool(source.content and source.accessible and source.status == "ok"),
         "search_relevance": dict((value.get("metadata") or {}).get("provenance") or {}),
         "source_role": str((value.get("metadata") or {}).get("source_role") or "editorial_or_official"),
@@ -123,6 +125,54 @@ def _story_for_agent(story: StoryCluster) -> dict[str, Any]:
             "retrieved_at",
         )
     }
+
+
+def _agent_result(payload: dict[str, Any]) -> dict[str, Any]:
+    """Deduplicate evidence without changing the stored research or its IDs.
+
+    The complete archive stays scoped on the server. An oversized source list
+    explicitly names omitted IDs so the agent can fetch the next page.
+    """
+    evidence_sets: dict[str, Any] = {}
+    for key in ("stories", "suggestions"):
+        for story in payload.get(key, []):
+            evidence = story.pop("channel_evidence", [])
+            if evidence:
+                encoded = json.dumps(evidence, ensure_ascii=False, sort_keys=True)
+                reference = hashlib.sha256(encoded.encode()).hexdigest()[:16]
+                evidence_sets[reference] = evidence
+                story["channel_evidence_ref"] = reference
+    if evidence_sets:
+        payload["channel_evidence_sets"] = evidence_sets
+    sources = payload.get("sources", [])
+    omitted: list[str] = []
+    def size() -> int:
+        return len(json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str))
+    if size() > limits.TOOL_RESULT_MAX_CHARS:
+        # Story summaries often duplicate article text already in documents.
+        # Preserve the actual read pages before paging source metadata.
+        for key in ("stories", "suggestions"):
+            for story in payload.get(key, []):
+                summary = str(story.get("summary") or "")
+                if len(summary) > 600:
+                    story["summary"] = summary[:599].rstrip() + "…"
+                    story["summary_truncated"] = True
+    while sources and size() > limits.TOOL_RESULT_MAX_CHARS:
+        omitted.insert(0, str(sources.pop()["source_id"]))
+        payload["omitted_source_ids"] = omitted
+        payload["continuation"] = "Use get_research_sources with omitted_source_ids to read the remaining results."
+    if size() > limits.TOOL_RESULT_MAX_CHARS:
+        # Pathological diagnostics/evidence must not bypass the final bound.
+        # Keep all source identities and explicitly offer the scoped archive.
+        payload = {
+            "status": "details_available",
+            "selected_source_ids": payload.get("selected_source_ids", []) or omitted,
+            "omitted_source_ids": payload.get("selected_source_ids", []) or omitted,
+            "continuation": "Use get_research_sources for source details and get_performance_evidence for channel evidence.",
+            "search_outcome": payload.get("search_outcome"),
+            "warnings": ["The full result exceeded the context budget; detailed records remain in the scoped archive."],
+        }
+    return payload
 
 
 def _document_for_agent(document: SourceDocument) -> dict[str, Any]:
@@ -540,7 +590,7 @@ class ResearchService:
         response_bundle["trace_id"] = responses[0].trace_id
         response_bundle["activity"] = activity
         response_bundle["warnings"] = list(dict.fromkeys([*(warning for response in responses for warning in response.warnings), *bundle.warnings]))
-        return response_bundle  # type: ignore[return-value]
+        return _agent_result(response_bundle)
 
     async def read_sources(
         self,
@@ -615,7 +665,7 @@ class ResearchService:
         selected = [by_url.get(source.canonical_url, source) for source in values]
         selected_ids = {source.source_id for source in selected}
         stories = [story for story in bundle.stories if selected_ids.intersection(story.source_ids)][:8]
-        return {
+        return _agent_result({
             "documents": [
                 {**_document_for_agent(document), "source_id": source.source_id}
                 for document, source in zip(documents, selected)
@@ -626,7 +676,7 @@ class ResearchService:
             "selected_source_ids": [source.source_id for source in selected],
             "retrieved_at": bundle.model_dump(mode="json")["retrieved_at"],
             "activity": activity,
-        }
+        })
 
     async def compare_sources(
         self,
@@ -679,7 +729,7 @@ class ResearchService:
             missing.append("publication_date")
         if any(not source.excerpt for source in selected):
             missing.append("bounded_excerpt")
-        return {
+        return _agent_result({
             "sources": [_source_for_agent(source) for source in selected],
             "stories": [_story_for_agent(story) for story in stories[:8]],
             "agreements": common_terms,
@@ -688,7 +738,7 @@ class ResearchService:
             "warnings": list(bundle.warnings),
             "selected_source_ids": list(bundle.selected_source_ids),
             "retrieved_at": bundle.model_dump(mode="json")["retrieved_at"],
-        }
+        })
 
     @staticmethod
     def _common_terms(sources: Sequence[SourceEvidence]) -> list[str]:
@@ -786,7 +836,7 @@ class ResearchService:
                     if isinstance(item, dict) and item.get("relevant")
                 ],
             ))
-        return {
+        return _agent_result({
             "queries": queries,
             "suggestions": suggestions,
             "sources": [_source_for_agent(source) for source in selected],
@@ -796,7 +846,33 @@ class ResearchService:
             "failed_engines": outcome_summary["failed_engines"],
             "providers": sorted({response.provider for response in responses}),
             "activity": activities,
-        }
+        })
+
+    async def source_page(
+        self, *, workspace_id: Any, conversation_id: Any, channel_id: int,
+        source_ids: Sequence[str], offset: int = 0, limit: int = 12,
+        include_content: bool = False,
+    ) -> dict[str, Any]:
+        state = await self._ensure_loaded(workspace_id=workspace_id, conversation_id=conversation_id, channel_id=channel_id)
+        ids = list(dict.fromkeys(str(item) for item in source_ids))[:1000]
+        offset, limit = max(0, int(offset)), max(1, min(int(limit), 20))
+        selected = ids[offset:offset + limit]
+        available = {item: state.sources[item] for item in selected if item in state.sources}
+        missing = [item for item in selected if item not in available]
+        reader = getattr(self.repository, "get_research_sources", None)
+        if missing and reader is not None:
+            rows = await reader(conversation_id=conversation_id, channel_id=channel_id, source_ids=missing)
+            for row in rows:
+                source = to_source_evidence(row)
+                available[source.source_id] = source
+        sources = [available[item] for item in selected if item in available]
+        payload = _agent_result({
+            "sources": [dict(_source_for_agent(source), **({"content": source.content[:3500]} if include_content and source.content else {})) for source in sources],
+            "selected_source_ids": selected,
+        })
+        payload["next_offset"] = offset + limit if offset + limit < len(ids) else None
+        payload["unknown_source_ids"] = [item for item in selected if item not in available]
+        return payload
 
     async def get_source(self, *, workspace_id: Any, conversation_id: Any, channel_id: int, source_id: str) -> SourceEvidence | None:
         state = await self._ensure_loaded(workspace_id=workspace_id, conversation_id=conversation_id, channel_id=channel_id)

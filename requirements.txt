@@ -10,6 +10,8 @@ qrcode>=7.4,<9
 # AG-UI adapter used by the disposable Studio feasibility spike. Keep this
 # exact until the dependency is reviewed against the next security release.
 pydantic-ai-slim[ag-ui,openai]==2.37.0
+# Local, provider-independent input-budget estimates (already in requirements.lock).
+tiktoken==0.14.0
 markdown-it-py==4.2.0
 SQLAlchemy>=2.0,<3
 asyncpg>=0.29,<1

@@ -99,6 +99,8 @@ def test_structured_observation_contains_only_allowlisted_metadata(caplog):
     assert record.studio_observation["usage"]["total_tokens"] == 7
     assert "prompt" not in record.studio_observation
     assert "private" not in str(record.studio_observation)
+    assert '"input_tokens": 4' in record.getMessage()
+    assert "private" not in record.getMessage()
 
 
 @pytest.mark.asyncio

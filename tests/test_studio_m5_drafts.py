@@ -141,7 +141,7 @@ def test_m5_agent_registers_all_draft_tools():
 
 
 @pytest.mark.asyncio
-async def test_channel_context_includes_profile_and_current_draft_for_history_inference():
+async def test_channel_context_includes_profile_and_draft_pointer_with_on_demand_content():
     repository = MemoryStudioRepository()
     conversation = await repository.create_conversation(channel_id=1)
     await repository.upsert_profile(
@@ -160,7 +160,7 @@ async def test_channel_context_includes_profile_and_current_draft_for_history_in
     )
     agent = build_agent(
         Settings(studio_test_mode=True),
-        model=TestModel(call_tools=["get_channel_context"], custom_output_text="context ready"),
+        model=TestModel(call_tools=["get_channel_context", "get_draft"], custom_output_text="context ready"),
     )
     result = await agent.run(
         "Use our history to help with the next post.",
@@ -176,3 +176,11 @@ async def test_channel_context_includes_profile_and_current_draft_for_history_in
     assert "technology" in serialized
     assert "draft_context" in serialized
     assert "History-aware draft" in serialized
+
+    tool_parts = [part for message in result.all_messages() for part in message.parts if getattr(part, "part_kind", "") == "tool-return"]
+    context = next(part.content for part in tool_parts if part.tool_name == "get_channel_context")
+    context = context.model_dump(mode="json") if hasattr(context, "model_dump") else context
+    assert context["draft_context"]["content_tool"] == "get_draft"
+    assert "History-aware draft" not in str(context)
+    draft = next(part.content for part in tool_parts if part.tool_name == "get_draft")
+    assert draft["draft"]["body"] == "History-aware draft"

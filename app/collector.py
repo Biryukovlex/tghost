@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import inspect
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
@@ -90,6 +91,13 @@ class Collector:
         self._entities: dict[str, Any] = {}
         self._lock = asyncio.Lock()  # one cycle at a time (scheduler + manual refresh)
         self._background: asyncio.Task | None = None
+        self._pending_polls: dict[int | None, asyncio.Task] = {}
+        self._running_poll: asyncio.Task | None = None
+        self._running_channel_id: int | None = None
+        self._running_reason = ""
+        # Successful complete thread reads only. A restart safely causes one
+        # fresh reconciliation; partial/failed reads never establish freshness.
+        self._comment_checks: dict[int, tuple[int, datetime]] = {}
         self._next_allowed_at: float = 0.0
         self._last_full_scan: dict[int, datetime] = {}
 
@@ -163,21 +171,37 @@ class Collector:
                 failed.append(ident)
         return failed
 
-    def schedule_poll(self, reason: str = "manual") -> asyncio.Task:
-        """Supervised background poll that logs exceptions."""
+    def schedule_channel_poll(self, channel_id: int, reason: str = "manual") -> asyncio.Task:
+        return self.schedule_poll(reason, channel_id=channel_id)
 
-        task = asyncio.create_task(self.poll_all(reason=reason))
+    def schedule_poll(self, reason: str = "manual", *, channel_id: int | None = None) -> asyncio.Task:
+        """Coalesce refreshes already covered by a running or queued scope."""
+        running = self._running_poll
+        if running is not None and not running.done() and (self._running_channel_id is None or self._running_channel_id == channel_id) and (reason not in {"web", "manual"} or self._running_reason in {"web", "manual"}):
+            return running
+        for scope in (None, channel_id):
+            pending = self._pending_polls.get(scope)
+            if pending is not None and not pending.done():
+                return pending
+        kwargs: dict[str, Any] = {"reason": reason}
+        if channel_id is not None:
+            kwargs["channel_id"] = channel_id
+        task = asyncio.create_task(self.poll_all(**kwargs))
         self._background = task
+        self._pending_polls[channel_id] = task
 
         def _done(t: asyncio.Task) -> None:
             try:
                 t.result()
+            except asyncio.CancelledError:
+                pass
             except Exception as exc:  # noqa: BLE001
-                log.exception("background poll (%s) failed: %s", reason, exc)
+                log.exception("background poll (%s) failed: %s", reason, type(exc).__name__)
             finally:
                 if self._background is t:
                     self._background = None
-
+                if self._pending_polls.get(channel_id) is t:
+                    self._pending_polls.pop(channel_id, None)
         task.add_done_callback(_done)
         return task
 
@@ -218,7 +242,7 @@ class Collector:
         deleted = await (self.db.mark_unseen_comments_deleted(post_id, sync_token))
         return seen, changed, deleted
 
-    async def poll_channel(self, ch: Any, job_id: Any = None) -> tuple[int, int, int, int, int, int]:
+    async def poll_channel(self, ch: Any, job_id: Any = None, *, force_comments: bool = False) -> tuple[int, int, int, int, int, int]:
         """Scan one channel. Return post, snapshot, and comment collection counts."""
 
         assert self.client is not None, "Telegram client is required to poll channels"
@@ -322,12 +346,23 @@ class Collector:
                     should_fetch = bool(await (self.db.has_comments(post_id)))
                 except Exception:
                     should_fetch = False
+            checked = self._comment_checks.get(post_id)
+            if should_fetch and not force_comments and checked is not None:
+                checked_count, checked_at = checked
+                if comments == checked_count and 0 <= (utcnow() - checked_at).total_seconds() < limits.COMMENT_RECHECK_SECONDS:
+                    should_fetch = False
             if should_fetch:
+                # Invalidate before the first write. A failed/partial pass must
+                # retry even when Telegram reports the same comment count.
+                self._comment_checks.pop(post_id, None)
                 try:
                     c_seen, c_written, c_deleted = await self.sync_comments(entity, post_id, msg.id)
                     comments_seen += c_seen
                     comments_written += c_written
                     comments_deleted += c_deleted
+                    self._comment_checks[post_id] = (comments, utcnow())
+                    if len(self._comment_checks) > 10_000:
+                        self._comment_checks.pop(next(iter(self._comment_checks)))
                     await asyncio.sleep(0.5)
                 except errors.FloodWaitError:
                     raise
@@ -384,7 +419,7 @@ class Collector:
                 log.warning("channel metrics observation failed for channel %s: %s", ch["id"], type(exc).__name__)
         return seen, written, comments_seen, comments_written, comments_deleted, comment_errors
 
-    async def poll_all(self, reason: str = "scheduled") -> dict[str, Any]:
+    async def poll_all(self, reason: str = "scheduled", *, channel_id: int | None = None) -> dict[str, Any]:
         # Cross-process refresh: reload workspace settings and reschedule if poll interval changed
         if getattr(self, "workspace_settings", None) is not None:
             try:
@@ -394,84 +429,96 @@ class Collector:
                 interval_callback = getattr(self, "on_poll_interval_change", None)
                 if applied is not None and new != applied and callable(interval_callback):
                     try:
-                        await (interval_callback(new))
+                        changed = interval_callback(new)
+                        if inspect.isawaitable(changed):
+                            await changed
                     except Exception:
                         log.warning("on_poll_interval_change failed")
             except Exception:
                 log.warning("workspace_settings load failed in poll_all")
         async with self._lock:
-            started = utcnow()
-            total_seen = total_new = 0
-            total_comments = total_comments_changed = total_comments_deleted = total_comment_errors = 0
-            err_count = 0
-            channels = await (self.db.get_channels())
-            for ch in channels:
-                if time.monotonic() < self._next_allowed_at:
-                    log.info("skipping channel %s due to active FloodWait", ch["identifier"])
-                    continue
-                job_id = None
-                channel_failed = False
-                failure_code = None
-                claim = getattr(self.db, "claim_collection_job", None)
-                if claim is not None:
-                    job_id = await (claim(ch["id"]))
-                    if job_id is None:
-                        log.info("collection already running for channel %s; skipping overlap", ch["identifier"])
+            self._running_poll = asyncio.current_task()
+            self._running_channel_id = channel_id
+            self._running_reason = reason
+            try:
+                started = utcnow()
+                total_seen = total_new = 0
+                total_comments = total_comments_changed = total_comments_deleted = total_comment_errors = 0
+                err_count = 0
+                channels = await (self.db.get_channels())
+                if channel_id is not None:
+                    channels = [ch for ch in channels if int(ch["id"]) == channel_id]
+                for ch in channels:
+                    if time.monotonic() < self._next_allowed_at:
+                        log.info("skipping channel %s due to active FloodWait", ch["identifier"])
                         continue
-                try:
-                    seen, written, comments, comments_changed, comments_deleted, comment_errors = (
-                        await self.poll_channel(ch, job_id=job_id)
-                    )
-                    total_seen += seen
-                    total_new += written
-                    total_comments += comments
-                    total_comments_changed += comments_changed
-                    total_comments_deleted += comments_deleted
-                    total_comment_errors += comment_errors
-                except errors.FloodWaitError as exc:
-                    log.warning("flood wait %ss while polling %s", exc.seconds, ch["identifier"])
-                    channel_failed = True
-                    failure_code = type(exc).__name__
-                    self._next_allowed_at = time.monotonic() + float(exc.seconds)
-                    err_count += 1
-                    await asyncio.sleep(min(float(exc.seconds), 30))
-                except Exception as exc:  # noqa: BLE001
-                    err_count += 1
-                    channel_failed = True
-                    failure_code = type(exc).__name__
-                    log.exception("poll failed for %s", ch["identifier"])
-                finally:
-                    finish = getattr(self.db, "finish_collection_job", None)
-                    if finish is not None and job_id is not None:
-                        await (
-                            finish(
-                                job_id,
-                                status="failed" if channel_failed else "succeeded",
-                                error=failure_code,
-                            )
+                    job_id = None
+                    channel_failed = False
+                    failure_code = None
+                    claim = getattr(self.db, "claim_collection_job", None)
+                    if claim is not None:
+                        job_id = await (claim(ch["id"]))
+                        if job_id is None:
+                            log.info("collection already running for channel %s; skipping overlap", ch["identifier"])
+                            continue
+                    try:
+                        seen, written, comments, comments_changed, comments_deleted, comment_errors = (
+                            await self.poll_channel(ch, job_id=job_id, **({"force_comments": True} if reason in {"web", "manual"} else {}))
                         )
-            prune = getattr(self.db, "prune_collection_jobs", None)
-            if prune is not None:
-                try:
-                    await (prune())
-                except Exception:
-                    log.warning("collection job pruning failed")
-            summary: dict[str, Any] = {
-                "reason": reason,
-                "started": started,
-                "finished": utcnow(),
-                "posts_seen": total_seen,
-                "snapshots_written": total_new,
-                "comments_seen": total_comments,
-                "comments_written": total_comments_changed,
-                "comments_deleted": total_comments_deleted,
-                "comment_errors": total_comment_errors,
-                "errors": err_count,
-            }
-            log.info(
-                "cycle(%s): %s posts, %s snapshots, %s comments (%s changed, %s deleted) (%.1fs)",
-                reason, total_seen, total_new, total_comments,
-                total_comments_changed, total_comments_deleted,
-                (summary["finished"] - started).total_seconds(),
-            )
-            return summary
+                        total_seen += seen
+                        total_new += written
+                        total_comments += comments
+                        total_comments_changed += comments_changed
+                        total_comments_deleted += comments_deleted
+                        total_comment_errors += comment_errors
+                    except errors.FloodWaitError as exc:
+                        log.warning("flood wait %ss while polling %s", exc.seconds, ch["identifier"])
+                        channel_failed = True
+                        failure_code = type(exc).__name__
+                        self._next_allowed_at = time.monotonic() + float(exc.seconds)
+                        err_count += 1
+                        await asyncio.sleep(min(float(exc.seconds), 30))
+                    except Exception as exc:  # noqa: BLE001
+                        err_count += 1
+                        channel_failed = True
+                        failure_code = type(exc).__name__
+                        log.exception("poll failed for %s", ch["identifier"])
+                    finally:
+                        finish = getattr(self.db, "finish_collection_job", None)
+                        if finish is not None and job_id is not None:
+                            await (
+                                finish(
+                                    job_id,
+                                    status="failed" if channel_failed else "succeeded",
+                                    error=failure_code,
+                                )
+                            )
+                prune = getattr(self.db, "prune_collection_jobs", None)
+                if prune is not None:
+                    try:
+                        await (prune())
+                    except Exception:
+                        log.warning("collection job pruning failed")
+                summary: dict[str, Any] = {
+                    "reason": reason,
+                    "started": started,
+                    "finished": utcnow(),
+                    "posts_seen": total_seen,
+                    "snapshots_written": total_new,
+                    "comments_seen": total_comments,
+                    "comments_written": total_comments_changed,
+                    "comments_deleted": total_comments_deleted,
+                    "comment_errors": total_comment_errors,
+                    "errors": err_count,
+                }
+                log.info(
+                    "cycle(%s): %s posts, %s snapshots, %s comments (%s changed, %s deleted) (%.1fs)",
+                    reason, total_seen, total_new, total_comments,
+                    total_comments_changed, total_comments_deleted,
+                    (summary["finished"] - started).total_seconds(),
+                )
+                return summary
+            finally:
+                self._running_poll = None
+                self._running_channel_id = None
+                self._running_reason = ""

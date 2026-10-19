@@ -64,7 +64,8 @@ async def test_m4_research_bundle_and_provider_activity_survive_reload():
                 {"post_id": 7, "message_id": 77, "link": "https://t.me/m4_persistence/77", "excerpt": "Winning topic post"}
             ],
         )
-        assert result["stories"][0]["channel_evidence"][0]["link"].endswith("/77")
+        reference = result["stories"][0]["channel_evidence_ref"]
+        assert result["channel_evidence_sets"][reference][0]["link"].endswith("/77")
         assert result["stories"][0]["score_breakdown"]["weights"]["topic_relevance"] == 0.4
         assert result["sources"][0]["quality_notes"] == []
         assert result["activity"]["provider"] == "fixture-search"
@@ -79,6 +80,16 @@ async def test_m4_research_bundle_and_provider_activity_survive_reload():
         assert bundle is not None
         assert bundle.sources[0].source_id == "persist-source"
         assert bundle.stories[0].channel_evidence[0]["link"].endswith("/77")
+        # Stored details remain available when bounded process-cache entries
+        # have been evicted, without issuing another search/provider call.
+        state = reloaded._state(db.workspace_id, conversation["id"], channel_id)
+        state.sources.clear()
+        page = await reloaded.source_page(workspace_id=db.workspace_id, conversation_id=conversation["id"], channel_id=channel_id, source_ids=["persist-source"])
+        assert page["sources"][0]["source_id"] == "persist-source"
+        assert page["unknown_source_ids"] == []
+        other = await repository.create_conversation(channel_id=channel_id)
+        assert await repository.get_research_sources(conversation_id=other["id"], channel_id=channel_id, source_ids=["persist-source"]) == []
+        assert await repository.get_research_sources(conversation_id=conversation["id"], channel_id=channel_id + 1, source_ids=["persist-source"]) == []
         events = await repository.list_research_events(
             conversation_id=conversation["id"], channel_id=channel_id
         )
