@@ -36,7 +36,7 @@ describe("StudioSettings channel prompt", () => {
     stubSettingsFetch("Be brief.");
     render(<StudioSettings channelId={7} channelLabel="@chan" onClose={() => {}} />);
     const box = (await screen.findByRole("textbox")) as HTMLTextAreaElement;
-    expect(box.value).toBe("Be brief.");
+    await waitFor(() => expect(box.value).toBe("Be brief."));
     expect(box.getAttribute("maxlength")).toBe("12000");
     expect(screen.getByText(/applies to this channel's conversations only|never apply to another channel/i)).toBeDefined();
   });
