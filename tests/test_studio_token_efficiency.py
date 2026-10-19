@@ -8,17 +8,17 @@ from types import SimpleNamespace
 import uuid
 
 import pytest
-from pydantic_ai import UsageLimitExceeded
-from pydantic_ai.messages import ModelRequest, ModelResponse, ToolCallPart, ToolReturnPart, UserPromptPart
+from pydantic_ai import UsageLimitExceeded, UsageLimits
+from pydantic_ai.messages import InstructionPart, ModelRequest, ModelResponse, TextPart, ToolCallPart, ToolReturnPart, UserPromptPart
 from pydantic_ai.models import ModelRequestContext, ModelRequestParameters
 from pydantic_ai.models.function import FunctionModel, DeltaToolCall
 from pydantic_ai.models.test import TestModel
-from pydantic_ai.usage import RunUsage
+from pydantic_ai.usage import RequestUsage, RunUsage
 
 from app import limits
 from app.config import Settings
 from app.studio.agent import StudioDeps, build_agent
-from app.studio.budget import StudioInputBudget
+from app.studio.budget import StudioInputBudget, estimate_request_tokens
 from app.studio.observability import safe_error
 from app.studio.repository import MemoryStudioRepository
 from app.studio.research import ResearchService, _agent_result
@@ -183,6 +183,137 @@ async def test_cumulative_budget_and_cross_message_evidence_deduplication(monkey
     monkeypatch.setattr(limits, "MAX_RUN_INPUT_TOKENS", 100)
     with pytest.raises(UsageLimitExceeded):
         await StudioInputBudget().before_model_request(SimpleNamespace(usage=RunUsage(input_tokens=99)), request)
+
+
+def _budget_request(messages, **params):
+    return ModelRequestContext(model=TestModel(), messages=messages, model_settings=None,
+                               model_request_parameters=ModelRequestParameters(**params))
+
+
+def test_request_estimate_excludes_replayed_instructions_and_execution_metadata():
+    messages = [ModelRequest(parts=[UserPromptPart("Inspect")])]
+    for n in range(6):
+        messages += [ModelResponse(parts=[ToolCallPart("search_web", {"query": "Evidence"}, tool_call_id=str(n))]),
+                     ModelRequest(parts=[ToolReturnPart("search_web", {"sources": []}, tool_call_id=str(n))])]
+    params = {"instruction_parts": [InstructionPart(content="Current authoritative instructions")]}
+    baseline = estimate_request_tokens(_budget_request(deepcopy(messages), **params))
+    for message in messages:
+        if isinstance(message, ModelRequest):
+            message.instructions = "Obsolete archived instructions " * 10000
+        else:
+            message.provider_details = {"private_payload": "Provider bookkeeping " * 10000}
+            message.usage = RequestUsage(input_tokens=40000, output_tokens=1000)
+    assert estimate_request_tokens(_budget_request(messages, **params)) == baseline
+    params["instruction_parts"] = [InstructionPart(content="Larger current instructions " * 1000)]
+    assert estimate_request_tokens(_budget_request(messages, **params)) > baseline + 1000
+    messages[-1].parts[0].content = {"text": "Read evidence " * 1000}
+    assert estimate_request_tokens(_budget_request(messages, **params)) > baseline + 2000
+
+
+@pytest.mark.asyncio
+async def test_latest_oversized_research_can_yield_to_archive_without_mutation(monkeypatch):
+    payload = {"sources": [{"source_id": "read-1", "url": "https://fixture.test/read", "has_read_content": True}],
+               "documents": [{"source_id": "read-1", "text": "Archived article body " * 10000}]}
+    original = deepcopy(payload)
+    request = _budget_request([ModelResponse(parts=[ToolCallPart("read_sources", {}, tool_call_id="r")]),
+                               ModelRequest(parts=[ToolReturnPart("read_sources", payload, tool_call_id="r")])])
+    monkeypatch.setattr(limits, "MAX_INPUT_TOKENS", 4000)
+    result = await StudioInputBudget().before_model_request(SimpleNamespace(usage=RunUsage()), request)
+    compacted = result.messages[-1].parts[0].content
+    assert compacted["status"] == "compacted" and compacted["selected_source_ids"] == ["read-1"]
+    assert compacted["sources"][0]["has_read_content"] is True
+    assert payload == original
+    assert estimate_request_tokens(result) <= 4000
+
+
+@pytest.mark.asyncio
+async def test_real_agent_reserves_a_final_answer_turn_before_cumulative_exhaustion(monkeypatch):
+    monkeypatch.setattr(limits, "MAX_RUN_INPUT_TOKENS", 20000)
+    snapshots, calls = [], []
+    async def observe(snapshot):
+        snapshots.append(snapshot)
+    def respond(messages, info):
+        calls.append(info)
+        if len(calls) == 1:
+            assert info.function_tools
+            return ModelResponse(parts=[ToolCallPart("get_channel_context", {})],
+                                 usage=RequestUsage(input_tokens=13000, output_tokens=10))
+        assert info.function_tools == []
+        assert info.model_settings["tool_choice"] == "none"
+        assert "final response" in info.instructions
+        assert "never claim unread sources were read" in info.instructions
+        assert any(isinstance(p, ToolReturnPart) for m in messages for p in m.parts)
+        return ModelResponse(parts=[TextPart("Collected evidence is limited; here is what it supports.")],
+                             usage=RequestUsage(input_tokens=4000, output_tokens=20))
+    deps = StudioDeps(repository=MemoryStudioRepository(), workspace_id="w", conversation_id="c", channel_id=1,
+                      cancel_event=asyncio.Event(), on_input_budget=observe)
+    result = await build_agent(Settings(studio_test_mode=True), model=FunctionModel(respond)).run(
+        "Continue the investigation", deps=deps,
+        usage_limits=UsageLimits(input_tokens_limit=20000, per_request_input_tokens_limit=48000, tool_calls_limit=12))
+    assert result.output.startswith("Collected evidence")
+    assert result.usage.requests == 2 and result.usage.tool_calls == 1
+    assert result.usage.input_tokens == 17000
+    assert [s["finalizing"] for s in snapshots] == [False, True]
+    assert all(s["estimated_input_tokens"] <= s["input_limit_tokens"] for s in snapshots)
+
+
+@pytest.mark.asyncio
+async def test_exhausted_tool_allowance_gets_a_final_turn_and_hard_input_failure_is_observable(monkeypatch):
+    request = _budget_request([ModelRequest(parts=[UserPromptPart("Summarize")])])
+    result = await StudioInputBudget().before_model_request(SimpleNamespace(usage=RunUsage(tool_calls=limits.MAX_TOOL_CALLS)), request)
+    assert result.model_settings["tool_choice"] == "none"
+    snapshots = []
+    async def observe(snapshot):
+        snapshots.append(snapshot)
+    monkeypatch.setattr(limits, "MAX_INPUT_TOKENS", 100)
+    with pytest.raises(UsageLimitExceeded):
+        await StudioInputBudget().before_model_request(
+            SimpleNamespace(usage=RunUsage(), deps=SimpleNamespace(on_input_budget=observe)),
+            _budget_request([ModelRequest(parts=[UserPromptPart("A large owner request " * 5000)])]))
+    assert snapshots[0]["status"] == "rejected"
+    assert snapshots[0]["estimated_input_tokens"] > snapshots[0]["input_limit_tokens"]
+    assert not any(isinstance(v, str) and "owner request" in v for v in snapshots[0].values())
+
+
+@pytest.mark.asyncio
+async def test_finalization_is_enforced_before_tool_effects_and_is_run_local(monkeypatch):
+    monkeypatch.setattr(limits, "MAX_RUN_INPUT_TOKENS", 20000)
+    class CountingRepository(MemoryStudioRepository):
+        calls = 0
+        async def channel_context(self, channel_id):
+            self.calls += 1
+            return await super().channel_context(channel_id)
+    repository = CountingRepository()
+    turns = []
+    def ignores_finalization(messages, info):
+        turns.append(info)
+        return ModelResponse(parts=[ToolCallPart("get_channel_context", {})],
+                             usage=RequestUsage(input_tokens=13000 if len(turns) == 1 else 1000, output_tokens=10))
+    agent = build_agent(Settings(studio_test_mode=True), model=FunctionModel(ignores_finalization))
+    def deps():
+        return StudioDeps(repository=repository, workspace_id="w", conversation_id="c", channel_id=1,
+                          cancel_event=asyncio.Event())
+    with pytest.raises(UsageLimitExceeded):
+        await agent.run("Inspect", deps=deps())
+    assert repository.calls == 1  # no execution when the model ignores tool_choice=none
+    turns.clear()
+    with pytest.raises(UsageLimitExceeded):
+        await agent.run("Independent new run", deps=deps())
+    assert repository.calls == 2  # previous run's finalization state did not leak
+
+
+def test_instruction_fallback_and_explicit_empty_instructions():
+    request = _budget_request([ModelRequest(parts=[UserPromptPart("Inspect")], instructions="Owner instructions " * 1000)])
+    fallback = estimate_request_tokens(request)
+    request.model_request_parameters.instruction_parts = [InstructionPart(content="Owner instructions " * 1000)]
+    assert estimate_request_tokens(request) == fallback
+    request.model_request_parameters.instruction_parts = []
+    assert estimate_request_tokens(request) < fallback - 1000
+    request.model_request_parameters.instruction_parts = None
+    request.messages.append(ModelRequest(parts=[ToolReturnPart("search_web", {"sources": []}, tool_call_id="a")]))
+    continuation = estimate_request_tokens(request)
+    request.messages[-1] = ModelRequest(parts=[UserPromptPart("New instruction-free request")])
+    assert estimate_request_tokens(request) < continuation - 1000
 
 
 @pytest.mark.asyncio

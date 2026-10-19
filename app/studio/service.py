@@ -731,6 +731,9 @@ class StudioService:
             emit_observation(log, "model", conversation_id=conversation_id, run_id=run_id,
                              requested_model=model_name(settings), usage=snapshot)
 
+        async def observe_input_budget(snapshot: dict[str, Any]) -> None:
+            emit_observation(log, "input_budget", conversation_id=conversation_id, run_id=run_id, **snapshot)
+
         deps = StudioDeps(
             repository=self.repository,
             workspace_id=self.repository.workspace_id,
@@ -739,6 +742,7 @@ class StudioService:
             cancel_event=handle.cancel_event,
             research=self.research_service,
             on_model_response=persist_model_usage,
+            on_input_budget=observe_input_budget,
         )
 
         async def emit_terminal_notice(current: dict[str, Any] | None) -> bool:

@@ -320,6 +320,11 @@ def emit_observation(logger: Any, kind: str, **fields: Any) -> None:
         "provider_code",
         "phase",
         "usage",
+        "estimated_input_tokens",
+        "remaining_input_tokens",
+        "input_limit_tokens",
+        "compacted_results",
+        "finalizing",
     }
     safe: dict[str, Any] = {}
     for key, value in fields.items():
@@ -336,7 +341,7 @@ def emit_observation(logger: Any, kind: str, **fields: Any) -> None:
             safe[key] = _bounded_int(value)
         elif key.endswith("_id") or key in {"provider", "requested_model", "actual_model", "prompt_version", "tool_name", "event_type", "stage", "status", "error_code", "phase", "upstream_class"}:
             safe[key] = str(value)[:160]
-        elif key in {"cache_hit", "degraded"}:
+        elif key in {"cache_hit", "degraded", "finalizing"}:
             safe[key] = bool(value)
         else:
             safe[key] = _bounded_int(value)

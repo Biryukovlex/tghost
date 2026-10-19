@@ -92,11 +92,20 @@ def test_structured_observation_contains_only_allowlisted_metadata(caplog):
             status="succeeded",
             duration_ms=12,
             usage={"input_tokens": 4, "output_tokens": 3, "prompt": "private"},
+            estimated_input_tokens=12000,
+            remaining_input_tokens=20000,
+            input_limit_tokens=20000,
+            compacted_results=2,
+            finalizing=True,
             prompt="private prompt must not be logged",
         )
     record = next(item for item in caplog.records if item.name == "studio")
     assert record.studio_observation["run_id"] == "run-1"
     assert record.studio_observation["usage"]["total_tokens"] == 7
+    assert record.studio_observation["estimated_input_tokens"] == 12000
+    assert record.studio_observation["remaining_input_tokens"] == record.studio_observation["input_limit_tokens"] == 20000
+    assert record.studio_observation["compacted_results"] == 2
+    assert record.studio_observation["finalizing"] is True
     assert "prompt" not in record.studio_observation
     assert "private" not in str(record.studio_observation)
     assert '"input_tokens": 4' in record.getMessage()

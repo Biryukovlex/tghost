@@ -42,6 +42,7 @@ class StudioDeps:
     # service from server settings; browser input never controls this object.
     research: ResearchService | None = None
     on_model_response: Callable[[Any], Awaitable[None]] | None = None
+    on_input_budget: Callable[[dict[str, Any]], Awaitable[None]] | None = None
     completed_tools: set[str] = field(default_factory=set)
     tool_call_counts: dict[str, int] = field(default_factory=dict)
     # Computed once per run and reused across research tools so a single run
