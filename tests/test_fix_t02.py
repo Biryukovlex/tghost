@@ -373,3 +373,21 @@ async def test_static_assets_use_content_hash_versions(tmp_path):
         assert f"/static/app.js?v={version}" in dash.text
         assert f"/static/style.css?v={version}" in dash.text
         assert 'app.js?v=2"' not in dash.text
+
+
+def test_provider_catalog_changes_invalidate_browser_assets(tmp_path, monkeypatch):
+    from app.web import routes
+
+    static = tmp_path / "static"
+    static.mkdir()
+    script = static / "provider-connections.js"
+    script.write_text("previous catalog loader")
+    monkeypatch.setattr(routes, "WEB_DIR", tmp_path)
+    routes.static_asset_version.cache_clear()
+    try:
+        before = routes.static_asset_version()
+        script.write_text("updated catalog loader")
+        routes.static_asset_version.cache_clear()
+        assert routes.static_asset_version() != before
+    finally:
+        routes.static_asset_version.cache_clear()
