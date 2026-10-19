@@ -312,6 +312,7 @@ def emit_observation(logger: Any, kind: str, **fields: Any) -> None:
         "error_code",
         "exception_class",
         "upstream_class",
+        "failure_kind",
         "status_code",
         "provider_code",
         "phase",
@@ -323,6 +324,9 @@ def emit_observation(logger: Any, kind: str, **fields: Any) -> None:
             continue
         if key == "usage":
             safe[key] = normalize_usage(value)
+        elif key == "failure_kind":
+            if isinstance(value, str) and value in {"provider_response_unsuccessful", "provider_stream_truncated", "provider_empty_response", "output_retries_exhausted", "unexpected_model_behavior"}:
+                safe[key] = value
         elif key == "exception_class":
             safe[key] = str(value)[:120]
         elif key == "status_code":

@@ -1139,6 +1139,7 @@ class StudioService:
                         error_code=code,
                         exception_class=exc.__class__.__name__,
                         upstream_class=diagnostics.get("exception_class"),
+                        failure_kind=diagnostics.get("failure_kind"),
                         phase=diagnostics.get("phase"),
                         status_code=safe_status_code(exc),
                         provider_code=diagnostics.get("provider_code"),

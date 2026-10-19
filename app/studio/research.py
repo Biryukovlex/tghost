@@ -854,7 +854,7 @@ class ResearchService:
         include_content: bool = False,
     ) -> dict[str, Any]:
         state = await self._ensure_loaded(workspace_id=workspace_id, conversation_id=conversation_id, channel_id=channel_id)
-        ids = list(dict.fromkeys(str(item) for item in source_ids))[:1000]
+        ids = list(dict.fromkeys(str(item) for item in source_ids))[:1000] if source_ids else sorted(state.sources)
         offset, limit = max(0, int(offset)), max(1, min(int(limit), 20))
         selected = ids[offset:offset + limit]
         available = {item: state.sources[item] for item in selected if item in state.sources}
@@ -872,6 +872,11 @@ class ResearchService:
         })
         payload["next_offset"] = offset + limit if offset + limit < len(ids) else None
         payload["unknown_source_ids"] = [item for item in selected if item not in available]
+        if not source_ids:
+            payload["catalog_source_count"] = len(state.sources)
+            payload["catalog_read_source_count"] = sum(bool(source.content and source.accessible and source.status == "ok") for source in state.sources.values())
+        if payload["unknown_source_ids"]:
+            payload["continuation"] = "Use get_research_sources with source_ids=[] to browse this conversation's stored IDs; include_content=true returns already-read text."
         return payload
 
     async def get_source(self, *, workspace_id: Any, conversation_id: Any, channel_id: int, source_id: str) -> SourceEvidence | None:

@@ -183,3 +183,61 @@ async def test_cumulative_budget_and_cross_message_evidence_deduplication(monkey
     monkeypatch.setattr(limits, "MAX_RUN_INPUT_TOKENS", 100)
     with pytest.raises(UsageLimitExceeded):
         await StudioInputBudget().before_model_request(SimpleNamespace(usage=RunUsage(input_tokens=99)), request)
+
+
+@pytest.mark.asyncio
+async def test_source_catalog_can_be_discovered_and_paged_without_known_ids():
+    from app.studio.sources import SourceDocument
+    class Reader:
+        async def read(self, url):
+            return SourceDocument(url=url, canonical_url=url, final_url=url, title="Synthetic article", text="Read synthetic evidence.")
+    service = ResearchService(Settings(studio_test_mode=True), reader=Reader())
+    scope = dict(workspace_id="w", conversation_id="c", channel_id=1)
+    await service.read_sources(**scope, urls=[f"https://fixture.test/{n}" for n in range(3)])
+    first = await service.source_page(**scope, source_ids=[], limit=2, include_content=True)
+    assert len(first["sources"]) == 2 and first["next_offset"] == 2
+    assert first["catalog_source_count"] == first["catalog_read_source_count"] == 3
+    assert all(s["has_read_content"] and s["content"] for s in first["sources"])
+    last = await service.source_page(**scope, source_ids=[], offset=2, limit=2)
+    assert len(last["sources"]) == 1 and last["next_offset"] is None
+    assert {s["source_id"] for s in first["sources"]}.isdisjoint(s["source_id"] for s in last["sources"])
+    unknown = await service.source_page(**scope, source_ids=["unknown"])
+    assert unknown["unknown_source_ids"] == ["unknown"]
+    assert "source_ids=[]" in unknown["continuation"]
+    for other in [dict(workspace_id="other", conversation_id="c", channel_id=1), dict(workspace_id="w", conversation_id="other", channel_id=1)]:
+        assert (await service.source_page(**other, source_ids=[]))["sources"] == []
+    deps = StudioDeps(repository=MemoryStudioRepository(), **scope, research=service, cancel_event=asyncio.Event(), required_tools=("get_research_sources",))
+    model = TestModel(call_tools=["get_research_sources"], custom_output_text="Three saved sources were read.")
+    result = await build_agent(Settings(studio_test_mode=True), model=model).run("Прочитал источники?", deps=deps)
+    assert result.output == "Three saved sources were read."
+    assert deps.completed_tools == {"get_research_sources"}
+
+
+@pytest.mark.asyncio
+async def test_read_status_recovers_from_unknown_ids_before_accepting_an_answer():
+    from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart, RetryPromptPart
+    from pydantic_ai.models.function import FunctionModel
+    from app.studio.agent import workflow_tool_sequence
+    from app.studio.sources import SourceDocument
+    class Reader:
+        async def read(self, url):
+            return SourceDocument(url=url, canonical_url=url, final_url=url, title="Synthetic article", text="Synthetic saved text.")
+    research = ResearchService(Settings(studio_test_mode=True), reader=Reader())
+    scope = dict(workspace_id="w", conversation_id="c", channel_id=1)
+    await research.read_sources(**scope, urls=["https://fixture.test/read"])
+    calls = []
+    def model(messages, info):
+        calls.append(messages)
+        if len(calls) == 1:
+            return ModelResponse(parts=[ToolCallPart("get_research_sources", {"source_ids": ["unknown"]})])
+        if len(calls) == 2:
+            return ModelResponse(parts=[TextPart("No evidence was checked.")])
+        if len(calls) == 3:
+            assert any(isinstance(part, RetryPromptPart) for message in messages for part in message.parts)
+            return ModelResponse(parts=[ToolCallPart("get_research_sources", {"source_ids": [], "include_content": True})])
+        return ModelResponse(parts=[TextPart("One saved article has been read.")])
+    deps = StudioDeps(repository=MemoryStudioRepository(), **scope, research=research, cancel_event=asyncio.Event(), required_tools=workflow_tool_sequence("Прочитал источники?"))
+    result = await build_agent(Settings(studio_test_mode=True), model=FunctionModel(model)).run("Прочитал источники?", deps=deps)
+    assert result.output == "One saved article has been read."
+    assert len(calls) == 4
+    assert deps.completed_tools == {"get_research_sources"}

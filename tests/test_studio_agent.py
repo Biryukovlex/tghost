@@ -139,3 +139,12 @@ async def test_model_cannot_claim_success_without_required_tools():
                 required_tools=("get_performance_evidence",),
             ),
         )
+
+
+@pytest.mark.parametrize("question", ["Прочитал источники?", "Ты читал ссылки?", "Какие источники прочитаны?", "Have you read the sources?", "Did you open the links?"])
+def test_source_status_questions_check_saved_evidence(question):
+    assert workflow_tool_sequence(question) == ("get_research_sources",)
+
+
+def test_source_status_followed_by_explicit_new_search_still_requires_search():
+    assert workflow_tool_sequence("Прочитал источники? Найди ещё новости.") == ("get_channel_context", "search_web")

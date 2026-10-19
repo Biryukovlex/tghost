@@ -68,6 +68,20 @@ def phase_for_failure(*, tool_calls_started: int, model_output_seen: bool) -> st
     return "startup"
 
 
+def _model_failure_kind(exc: BaseException) -> str | None:
+    if type(exc).__name__ != "UnexpectedModelBehavior":
+        return None
+    message = str(exc)
+    known = {
+        "ChatGPT returned an unsuccessful response": "provider_response_unsuccessful",
+        "ChatGPT stream ended before response.completed": "provider_stream_truncated",
+        "Streamed response ended without content or tool calls": "provider_empty_response",
+    }
+    if message.startswith("Exceeded maximum retries"):
+        return "output_retries_exhausted"
+    return known.get(message, "unexpected_model_behavior")
+
+
 def build_run_diagnostics(
     exc: BaseException,
     *,
@@ -81,10 +95,12 @@ def build_run_diagnostics(
 
     code, _message, _retryable = safe_error(exc)
     text = f"{exc.__class__.__name__} {exc}"
+    failure_kind = _model_failure_kind(exc)
     return {
         "phase": phase if phase in RUN_PHASES else "startup",
         "error_code": code,
         "exception_class": type(exc).__name__[:80],
+        **({"failure_kind": failure_kind} if failure_kind else {}),
         "status_code": safe_status_code(exc),
         "provider_code": _provider_code(exc, text),
         "requested_model": _bounded_str(requested_model),

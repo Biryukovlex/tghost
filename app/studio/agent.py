@@ -105,6 +105,13 @@ def workflow_tool_sequence(content: str, *, history: list[dict[str, Any]] | tupl
     # their workflow from the user's recent requests so the model cannot
     # answer from stale conversation text without re-running evidence tools.
     research_declined = bool(re.search(r"\b(?:без\s+(?:(?:нового|повторного)\s+)?поиск\w*|не\s+(?:ищи|искать)|no\s+(?:new\s+)?search|without\s+(?:a\s+)?(?:new\s+)?search|do\s+not\s+search)\b", text, re.I))
+    # A question about completed reads needs the scoped archive, not a new
+    # search. Explicit new-search instructions in the same message still win.
+    read_status = re.search(r"\b(прочитал[аи]?|прочитаны|читал[аи]?|открыл[аи]?|have\s+you\s+read|did\s+you\s+(?:read|open))\b", text, re.I)
+    mentions_sources = re.search(r"\b(источник|ссылк|sources?|links?)\w*\b", text, re.I)
+    new_search = re.search(r"\b(search|research|find|найди|найти|поищ|ищем|продолж|ещё|еще)\w*\b", text, re.I)
+    if read_status and mentions_sources and not new_search:
+        return ("get_research_sources",)
     wants_research = bool(_RESEARCH_INTENT.search(text)) and not research_declined
     wants_cross_check = bool(_CROSS_CHECK_INTENT.search(text))
     if wants_research:
@@ -465,18 +472,25 @@ def build_agent(settings, *, model=None) -> Agent[StudioDeps, str]:
         return result if isinstance(result, dict) else result.model_dump(mode="json")
 
     @agent.tool(prepare=workflow_tool_visibility)
-    async def get_research_sources(ctx: RunContext[StudioDeps], source_ids: list[str], offset: int = 0, limit: int = 12, include_content: bool = False) -> dict[str, Any]:
-        """Read a page of stored source details by ID, including omitted search results.
+    async def get_research_sources(ctx: RunContext[StudioDeps], source_ids: list[str] | None = None, offset: int = 0, limit: int = 12, include_content: bool = False) -> dict[str, Any]:
+        """Read stored source details, including omitted search results.
 
+        Omit source_ids or pass [] to browse this conversation's source IDs
+        and has_read_content flags, plus total saved/read source counts.
         include_content returns bounded text of already-read pages without
         another network fetch. Unknown IDs never cross conversation scope.
         """
         _check_cancel(ctx)
-        return await _research(ctx, settings).source_page(
+        result = await _research(ctx, settings).source_page(
             workspace_id=ctx.deps.workspace_id, conversation_id=ctx.deps.conversation_id,
-            channel_id=ctx.deps.channel_id, source_ids=source_ids, offset=offset,
+            channel_id=ctx.deps.channel_id, source_ids=source_ids or [], offset=offset,
             limit=limit, include_content=include_content,
         )
+        # Unknown IDs alone are not evidence that the archive was checked.
+        # The result points the model to the source_ids=[] catalog call.
+        if result.get("sources") or not source_ids:
+            ctx.deps.completed_tools.add("get_research_sources")
+        return result
 
     @agent.tool(prepare=workflow_tool_visibility)
     async def read_sources(ctx: RunContext[StudioDeps], urls: list[str]) -> dict[str, Any]:

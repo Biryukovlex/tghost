@@ -93,3 +93,17 @@ async def test_error_after_stream_delivery_never_retries():
         with pytest.raises(APIError):
             await Agent(model).run("Synthetic request")
     assert calls == 1
+
+
+@pytest.mark.parametrize("message,kind", [
+    ("ChatGPT returned an unsuccessful response", "provider_response_unsuccessful"),
+    ("ChatGPT stream ended before response.completed", "provider_stream_truncated"),
+    ("Streamed response ended without content or tool calls", "provider_empty_response"),
+    ("Exceeded maximum retries (4) for output validation", "output_retries_exhausted"),
+    ("synthetic-secret-response-body", "unexpected_model_behavior"),
+])
+def test_unexpected_model_failures_keep_a_safe_distinct_reason(message, kind):
+    from pydantic_ai import UnexpectedModelBehavior
+    result = build_run_diagnostics(UnexpectedModelBehavior(message))
+    assert result["failure_kind"] == kind
+    assert "synthetic-secret" not in json.dumps(result)
