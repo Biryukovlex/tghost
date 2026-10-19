@@ -21,7 +21,7 @@ from openai import APIError, APIStatusError
 from pydantic import ValidationError
 from pydantic_ai.exceptions import ModelHTTPError, UsageLimitExceeded
 
-from .model import StudioConfigurationError
+from .model import StudioConfigurationError, StudioModelStreamError, ModelStreamFailure
 
 
 _MAX_COUNT = 1_000_000_000
@@ -201,6 +201,9 @@ def safe_error(exc: BaseException) -> tuple[str, str, bool]:
     if category:
         message, retryable = _ERRORS[category]
         return category, message, retryable
+    if isinstance(exc, StudioModelStreamError):
+        message, retryable = _ERRORS["provider_invalid_response"]
+        return "provider_invalid_response", message, retryable
     name = exc.__class__.__name__.lower()
     text = name + " " + str(exc).lower()
     status_code = _status_code(exc, text)
@@ -325,7 +328,7 @@ def emit_observation(logger: Any, kind: str, **fields: Any) -> None:
         if key == "usage":
             safe[key] = normalize_usage(value)
         elif key == "failure_kind":
-            if isinstance(value, str) and value in {"provider_response_unsuccessful", "provider_stream_truncated", "provider_empty_response", "output_retries_exhausted", "unexpected_model_behavior"}:
+            if isinstance(value, str) and value in {*(reason.value for reason in ModelStreamFailure), "unexpected_model_behavior"}:
                 safe[key] = value
         elif key == "exception_class":
             safe[key] = str(value)[:120]

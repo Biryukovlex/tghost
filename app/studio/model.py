@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from enum import Enum
 
 from openai import APIError, APIStatusError
 from pydantic_ai import UnexpectedModelBehavior
@@ -66,6 +67,21 @@ def build_model(settings, *, test_model: bool | None = None) -> Model:
     )
 
 
+class ModelStreamFailure(str, Enum):
+    FAILED = "provider_response_failed"
+    INCOMPLETE = "provider_response_incomplete"
+    TRUNCATED = "provider_stream_truncated"
+    EMPTY = "provider_empty_response"
+
+
+class StudioModelStreamError(UnexpectedModelBehavior):
+    """A safe failure category captured from the stream lifecycle, never prose."""
+
+    def __init__(self, reason: ModelStreamFailure) -> None:
+        self.reason = reason
+        super().__init__("The provider response stream did not complete successfully.")
+
+
 class ChatGPTPlanModel(OpenAIResponsesModel):
     """ChatGPT-plan inference requires streaming, including structured extraction."""
 
@@ -78,14 +94,23 @@ class ChatGPTPlanModel(OpenAIResponsesModel):
     async def _process_streamed_response(self, response, model_settings, model_request_parameters, **kwargs):
         async def verified_events():
             completed = False
+            has_output = False
             async for event in response:
-                if event.type in {"response.failed", "response.incomplete"}:
-                    raise UnexpectedModelBehavior("ChatGPT returned an unsuccessful response")
+                if event.type == "response.failed":
+                    raise StudioModelStreamError(ModelStreamFailure.FAILED)
+                if event.type == "response.incomplete":
+                    raise StudioModelStreamError(ModelStreamFailure.INCOMPLETE)
+                if event.type == "response.output_item.added" and event.item.type == "function_call":
+                    has_output = True
+                if event.type in {"response.output_text.delta", "response.refusal.delta"} and event.delta:
+                    has_output = True
                 if event.type == "response.completed":
                     completed = True
                 yield event
             if not completed:
-                raise UnexpectedModelBehavior("ChatGPT stream ended before response.completed")
+                raise StudioModelStreamError(ModelStreamFailure.TRUNCATED)
+            if not has_output:
+                raise StudioModelStreamError(ModelStreamFailure.EMPTY)
         return await super()._process_streamed_response(verified_events(), model_settings, model_request_parameters, **kwargs)
 
     @asynccontextmanager

@@ -95,15 +95,68 @@ async def test_error_after_stream_delivery_never_retries():
     assert calls == 1
 
 
-@pytest.mark.parametrize("message,kind", [
-    ("ChatGPT returned an unsuccessful response", "provider_response_unsuccessful"),
-    ("ChatGPT stream ended before response.completed", "provider_stream_truncated"),
-    ("Streamed response ended without content or tool calls", "provider_empty_response"),
-    ("Exceeded maximum retries (4) for output validation", "output_retries_exhausted"),
-    ("synthetic-secret-response-body", "unexpected_model_behavior"),
+@pytest.mark.parametrize("message", [
+    "ChatGPT returned an unsuccessful response",
+    "ChatGPT stream ended before response.completed",
+    "Streamed response ended without content or tool calls",
+    "Exceeded maximum retries (4) for output validation",
+    "synthetic-secret-response-body",
 ])
-def test_unexpected_model_failures_keep_a_safe_distinct_reason(message, kind):
+def test_error_prose_never_controls_failure_classification(message):
     from pydantic_ai import UnexpectedModelBehavior
     result = build_run_diagnostics(UnexpectedModelBehavior(message))
-    assert result["failure_kind"] == kind
+    assert result["failure_kind"] == "unexpected_model_behavior"
     assert "synthetic-secret" not in json.dumps(result)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("terminal,kind", [("failed", "provider_response_failed"), ("incomplete", "provider_response_incomplete"), ("truncated", "provider_stream_truncated"), ("empty", "provider_empty_response")])
+async def test_stream_failure_categories_come_from_structured_events(terminal, kind):
+    from app.studio.model import StudioModelStreamError
+    events = completed_events()
+    if terminal in {"failed", "incomplete"}:
+        events[-1] = {**events[-1], "type": "response." + terminal,
+                      "response": {**events[-1]["response"], "status": terminal}}
+    elif terminal == "truncated":
+        events = events[:-1]
+    else:
+        events = [events[0], {**events[-1], "response": {**events[-1]["response"], "output": []}}]
+    requests = []
+    async def endpoint(request):
+        requests.append(request)
+        return sse(events)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(endpoint)) as client:
+        model = ChatGPTPlanModel("fixture", provider=OpenAIProvider(api_key="synthetic", http_client=client))
+        with pytest.raises(StudioModelStreamError) as error:
+            await Agent(model).run("Synthetic request")
+    assert len(requests) == 1
+    assert build_run_diagnostics(error.value)["failure_kind"] == kind
+    assert safe_error(error.value)[0] == "provider_invalid_response"
+
+
+@pytest.mark.asyncio
+async def test_a_tool_only_stream_is_valid_and_the_tool_is_executed_once():
+    requests = []
+    executed = []
+    created = completed_events()[0]
+    item = {"id": "fc_fixture", "type": "function_call", "call_id": "call_fixture", "name": "saved_sources", "arguments": "", "status": "in_progress"}
+    done = {**item, "arguments": "{}", "status": "completed"}
+    tool_events = [created,
+        {"type": "response.output_item.added", "sequence_number": 1, "output_index": 0, "item": item},
+        {"type": "response.function_call_arguments.delta", "sequence_number": 2, "output_index": 0, "item_id": item["id"], "delta": "{}"},
+        {"type": "response.function_call_arguments.done", "sequence_number": 3, "output_index": 0, "item_id": item["id"], "arguments": "{}"},
+        {"type": "response.output_item.done", "sequence_number": 4, "output_index": 0, "item": done},
+        {**completed_events()[-1], "sequence_number": 5, "response": {**completed_events()[-1]["response"], "output": [done]}}]
+    async def endpoint(request):
+        requests.append(request)
+        return sse(tool_events if len(requests) == 1 else completed_events())
+    async with httpx.AsyncClient(transport=httpx.MockTransport(endpoint)) as client:
+        model = ChatGPTPlanModel("fixture", provider=OpenAIProvider(api_key="synthetic", http_client=client))
+        agent = Agent(model)
+        @agent.tool_plain
+        def saved_sources() -> dict:
+            executed.append(True)
+            return {"source_count": 3}
+        result = await agent.run("Synthetic request")
+    assert result.output == "Saved"
+    assert len(requests) == 2 and len(executed) == 1

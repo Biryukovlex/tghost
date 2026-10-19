@@ -13,6 +13,9 @@ import logging
 import re
 from typing import Any
 
+from pydantic_ai import UnexpectedModelBehavior
+
+from .model import StudioModelStreamError
 from .observability import safe_error, safe_status_code
 
 log = logging.getLogger("studio.diagnostics")
@@ -69,17 +72,11 @@ def phase_for_failure(*, tool_calls_started: int, model_output_seen: bool) -> st
 
 
 def _model_failure_kind(exc: BaseException) -> str | None:
-    if type(exc).__name__ != "UnexpectedModelBehavior":
-        return None
-    message = str(exc)
-    known = {
-        "ChatGPT returned an unsuccessful response": "provider_response_unsuccessful",
-        "ChatGPT stream ended before response.completed": "provider_stream_truncated",
-        "Streamed response ended without content or tool calls": "provider_empty_response",
-    }
-    if message.startswith("Exceeded maximum retries"):
-        return "output_retries_exhausted"
-    return known.get(message, "unexpected_model_behavior")
+    if isinstance(exc, StudioModelStreamError):
+        return exc.reason.value
+    if isinstance(exc, UnexpectedModelBehavior):
+        return "unexpected_model_behavior"
+    return None
 
 
 def build_run_diagnostics(
