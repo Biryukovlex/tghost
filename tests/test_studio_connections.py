@@ -359,3 +359,38 @@ async def test_openai_catalog_rejects_invalid_envelopes(monkeypatch, payload):
         transport=httpx.MockTransport(lambda request: httpx.Response(200, json=payload)), **kwargs))
     with pytest.raises(ValueError, match="Invalid model catalog"):
         await c.available_models(settings, "openai")
+
+
+@pytest.mark.asyncio
+async def test_openai_catalog_accepts_large_metadata_without_returning_it(monkeypatch):
+    settings = Settings(studio_provider="openai", studio_openai_oauth=json.dumps(record()))
+    payload = {"models": [{"slug": f"synthetic-{i}", "display_name": f"Synthetic {i}",
+                           "visibility": "list", "metadata": "synthetic" * 8_000} for i in range(9)]}
+    assert len(json.dumps(payload).encode()) > 512_000
+    client_class = httpx.AsyncClient
+    monkeypatch.setattr(c.httpx, "AsyncClient", lambda **kwargs: client_class(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, json=payload)), **kwargs))
+    assert await c.available_models(settings, "openai") == [
+        {"id": f"synthetic-{i}", "name": f"Synthetic {i}"} for i in range(9)]
+
+
+@pytest.mark.asyncio
+async def test_openai_catalog_stops_reading_an_oversized_stream(monkeypatch):
+    settings = Settings(studio_provider="openai", studio_openai_oauth=json.dumps(record()))
+    class Parts(httpx.AsyncByteStream):
+        reads = 0
+        closed = False
+        async def __aiter__(self):
+            for _ in range(160):
+                self.reads += 1
+                yield b" " * 65_536
+        async def aclose(self):
+            self.closed = True
+    parts = Parts()
+    client_class = httpx.AsyncClient
+    monkeypatch.setattr(c.httpx, "AsyncClient", lambda **kwargs: client_class(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, stream=parts)), **kwargs))
+    with pytest.raises(ValueError, match="Model catalog too large"):
+        await c.available_models(settings, "openai")
+    assert parts.reads == 65
+    assert parts.closed

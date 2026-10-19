@@ -20,6 +20,7 @@ from cryptography.hazmat.primitives.asymmetric import padding, rsa
 AUTH_ORIGIN = "https://auth.openai.com"
 RESOURCE = "https://api.openai.com/v1"
 SCOPES = "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct"
+_MAX_OPENAI_CATALOG_BYTES = 4 * 1024 * 1024
 _PENDING: dict[str, dict] = {}
 _LOCKS: dict[str, asyncio.Lock] = {}
 
@@ -251,11 +252,17 @@ async def available_models(settings, provider: str, *, ollama_url: str | None = 
         await refresh_openai(settings, force=True)
         record = oauth_record(settings)
         async with httpx.AsyncClient(timeout=15, follow_redirects=False) as client:
-            response = await client.get(RESOURCE + "/models", headers={"Authorization": "Bearer " + record["access_token"]})
-            response.raise_for_status()
-            if len(response.content) > 512_000:
-                raise ValueError("Model catalog too large")
-            payload = response.json()
+            # Account catalogs include rich metadata even for a few models.
+            # Bound the decoded stream before buffering it, then return only
+            # picker fields rather than forwarding that metadata to the UI.
+            async with client.stream("GET", RESOURCE + "/models", headers={"Authorization": "Bearer " + record["access_token"]}) as response:
+                response.raise_for_status()
+                content = bytearray()
+                async for chunk in response.aiter_bytes(chunk_size=65_536):
+                    if len(content) + len(chunk) > _MAX_OPENAI_CATALOG_BYTES:
+                        raise ValueError("Model catalog too large")
+                    content.extend(chunk)
+            payload = json.loads(content)
             # ChatGPT account catalogs use models/slug; the public Models API
             # uses data/id. Neither format should lose entries to a UI limit.
             entries = payload.get("models", payload.get("data")) if isinstance(payload, dict) else None
