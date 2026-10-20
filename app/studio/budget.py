@@ -233,7 +233,8 @@ class StudioInputBudget(AbstractCapability):
             instructions = _instructions(request_context)
             instructions.append(InstructionPart(content=(
                 "The remaining run budget is reserved for your final response. Information tools are unavailable for this turn"
-                + ("; you may still save the requested draft with the remaining save tool. " if deliverable else ". ")
+                + ("; you may still deliver the requested post or edit with the remaining tools (write_post, revise_draft or a save tool). "
+                   if deliverable else ". ")
                 + "Answer the latest user request using evidence already present. State material gaps and research "
                 "limits; never claim unread sources were read, missing details verified, or unsaved artifacts saved."
             )))

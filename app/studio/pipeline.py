@@ -500,7 +500,9 @@ def _model_failure(job: _Job, exc: Exception) -> dict[str, Any]:
 
 # Job tools deliver the turn's artifact: once one succeeds, the budget gives the
 # next model turn no tools, so the chat agent summarizes instead of redoing work.
-JOB = {"completes_turn": True}
+# They are also deliverable: a finalizing turn that has run out of budget for
+# information tools can still produce the requested post or edit.
+JOB = {"completes_turn": True, "deliverable": True}
 
 
 def register_pipeline_tools(agent, settings) -> None:
