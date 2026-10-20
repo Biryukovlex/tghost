@@ -340,7 +340,11 @@ def _post_issues(material: dict[str, Any], body: str) -> list[str]:
     low, high = (min([low, *tops]), max([high, *tops])) if tops else (low, high)
     length = markdown_features(body)["length"]
     if high and not low <= length <= high:
-        issues.append(f"The post is {length} characters; the channel's top posts are {low}-{high}.")
+        target = high if length > high else low
+        verb = "Cut" if length > high else "Extend"
+        issues.append(f"The post is {length} characters; the channel's top posts are {low}-{high}. "
+                      f"{verb} it by at least {abs(length - target)} characters, to about {target}, "
+                      f"{'removing the least important sentences' if length > high else 'adding substance, not filler'}.")
     copied = copied_fragments(body, material["archive"], words=int(limits.COPY_SHINGLE_WORDS),
                               ignore=signature_lines(material["archive"]))
     if copied:
