@@ -201,3 +201,14 @@ async def test_find_stories_returns_candidates_without_a_draft(fake_embedder):
     assert returned["stories"][0]["sources"] == [fresh]
     assert "write" not in seen and await repository.get_current_draft(conversation_id=chat["id"], channel_id=1) is None
     assert seen[-1] == "summary-tools:"  # the finished job ends the turn with a summary
+
+
+def test_onnxruntime_telemetry_is_disabled_before_the_library_loads():
+    import os
+    from pathlib import Path
+
+    # The module sets it at import, before onnxruntime is imported lazily.
+    assert os.environ.get("ORT_DISABLE_TELEMETRY") == "1"
+    source = Path("app/studio/embeddings.py").read_text()
+    assert source.index('ORT_DISABLE_TELEMETRY') < source.index("import onnxruntime")
+    assert "ORT_DISABLE_TELEMETRY=1" in Path("Dockerfile").read_text()

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import threading
 from pathlib import Path
 from typing import Any, Protocol, Sequence
@@ -23,6 +24,12 @@ from typing import Any, Protocol, Sequence
 from .. import limits
 
 log = logging.getLogger(__name__)
+
+# The onnxruntime wheel ships a usage-telemetry client. Measured with strace:
+# it opens an outside connection on session start unless this variable is set
+# before the library initialises; disable_telemetry_events() alone does not
+# stop it. The image sets it too.
+os.environ.setdefault("ORT_DISABLE_TELEMETRY", "1")
 
 
 class TextEmbedder(Protocol):
