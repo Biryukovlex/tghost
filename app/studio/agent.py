@@ -19,7 +19,7 @@ from .context import ContextAssembler, profile_block_from_mapping
 from .draft_tools import draft_result, register_draft_tools
 from .pipeline import register_pipeline_tools
 from .tool_args import ToolArgumentBoundary
-from .web_results import compact_search, ranked_passages
+from .web_results import compact_search, ranked_passages, shrink
 from .schemas import ChannelContext
 from .research import ResearchService
 from .repository import StudioRepositoryProtocol, ConversationNotFound
@@ -361,6 +361,12 @@ def build_agent(settings, *, model=None) -> Agent[StudioDeps, str]:
             limit=limit, include_content=False,
         )
         if include_content:
+            # Reopening read pages for more passages is reading too: it shares the read cap.
+            reads = ctx.deps.tool_call_counts.get("read_sources", 0)
+            if reads >= int(limits.CHAT_MAX_READS):
+                return {**result, "status": "read_limit_reached",
+                        "message": "The read limit for this run is reached. Answer from the passages already read."}
+            ctx.deps.tool_call_counts["read_sources"] = reads + 1
             wanted = focus or (ctx.deps.owner_messages[-1] if ctx.deps.owner_messages else "")
             opened = 0
             for source in result.get("sources") or []:
@@ -443,7 +449,9 @@ def build_agent(settings, *, model=None) -> Agent[StudioDeps, str]:
         )
         _check_cancel(ctx)
         ctx.deps.completed_tools.add("compare_sources")
-        return result
+        payload = result if isinstance(result, dict) else result.model_dump(mode="json")
+        payload.pop("channel_evidence_sets", None)
+        return shrink(payload)
 
     async def propose_topic_changes(ctx: RunContext[StudioDeps], instruction: str) -> dict[str, Any]:
         """Profile is edited in the Profile dialog, not by the agent."""

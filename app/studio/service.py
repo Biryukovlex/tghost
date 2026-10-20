@@ -859,7 +859,9 @@ class StudioService:
                                 # A post pipeline job adds its own model requests and a
                                 # finalizing turn may still save the draft.
                                 request_limit=max(2, int(limits.MAX_TOOL_CALLS) + 2 + int(limits.PIPELINE_MAX_REQUESTS)),
-                                tool_calls_limit=max(1, int(limits.MAX_TOOL_CALLS) + int(limits.DELIVERABLE_TOOL_CALLS)),
+                                # Safety net: soft caps and finalization end research earlier, and calls
+                                # answered with "answer now" while finishing still count here.
+                                tool_calls_limit=max(1, int(limits.HARD_TOOL_CALLS)),
                                 output_tokens_limit=max(64, int(limits.MAX_RUN_OUTPUT_TOKENS)),
                                 input_tokens_limit=int(limits.MAX_RUN_INPUT_TOKENS) + int(limits.PIPELINE_MAX_INPUT_TOKENS),
                                 per_request_input_tokens_limit=int(limits.MAX_INPUT_TOKENS),

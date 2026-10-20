@@ -212,3 +212,20 @@ def test_onnxruntime_telemetry_is_disabled_before_the_library_loads():
     source = Path("app/studio/embeddings.py").read_text()
     assert source.index('ORT_DISABLE_TELEMETRY') < source.index("import onnxruntime")
     assert "ORT_DISABLE_TELEMETRY=1" in Path("Dockerfile").read_text()
+
+
+@pytest.mark.asyncio
+async def test_reopening_pages_shares_the_read_cap(fake_embedder):
+    research = ReadingResearch()
+
+    async def source_page(**kwargs):
+        return {"sources": [{"source_id": "id-0", "url": "https://x.test/0", "excerpt": "e"}]}
+    research.source_page = source_page
+    deps = await deps_with(research)
+    tools = build_agent(Settings(studio_test_mode=True))._function_toolset.tools
+    ctx = SimpleNamespace(deps=deps)
+    first = await tools["get_research_sources"].function(ctx, source_ids=["id-0"], include_content=True, focus="agent costs")
+    assert first["sources"][0]["passages"] and deps.tool_call_counts["read_sources"] == 1
+    deps.tool_call_counts["read_sources"] = limits.CHAT_MAX_READS
+    blocked = await tools["get_research_sources"].function(ctx, source_ids=["id-0"], include_content=True)
+    assert blocked["status"] == "read_limit_reached"

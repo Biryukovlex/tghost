@@ -69,6 +69,19 @@ async def ranked_passages(text: str, focus: str, *, offset: int = 0, budget: int
     }
 
 
+def shrink(value: Any, *, depth: int = 0) -> Any:
+    """Generic compact projection: short strings, short lists, shallow nesting; keys and IDs stay."""
+    if isinstance(value, str):
+        return value if len(value) <= 300 else value[:299].rstrip() + "…"
+    if isinstance(value, list):
+        return [shrink(item, depth=depth + 1) for item in value[:10]]
+    if isinstance(value, dict):
+        if depth > 4:
+            return {"omitted": True}
+        return {key: shrink(item, depth=depth + 1) for key, item in value.items() if key != "channel_evidence"}
+    return value
+
+
 def _date(value: Any) -> str | None:
     return str(value)[:10] if value else None
 
