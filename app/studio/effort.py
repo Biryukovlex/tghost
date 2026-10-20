@@ -21,7 +21,7 @@ def _endpoint(model: Any) -> str:
 
 def light_settings(model: Any) -> dict[str, Any]:
     """Model settings for a short decision step."""
-    settings: dict[str, Any] = {"max_tokens": int(limits.MAX_OUTPUT_TOKENS), "timeout": max(1.0, float(limits.PIPELINE_STEP_TIMEOUT_SECONDS))}
+    settings: dict[str, Any] = {"max_tokens": int(limits.PIPELINE_STEP_MAX_OUTPUT_TOKENS), "timeout": max(1.0, float(limits.PIPELINE_STEP_TIMEOUT_SECONDS))}
     if _endpoint(model).rstrip("/") == limits.OPENROUTER_BASE_URL.rstrip("/"):
         # OpenRouter's unified reasoning option; models without reasoning ignore it.
         settings["extra_body"] = {"reasoning": {"effort": "low"}}
@@ -30,4 +30,4 @@ def light_settings(model: Any) -> dict[str, Any]:
 
 def full_settings(model: Any) -> dict[str, Any]:
     """Model settings for steps that need real reasoning (story extraction, writing)."""
-    return {"max_tokens": int(limits.MAX_OUTPUT_TOKENS), "timeout": max(1.0, float(limits.PIPELINE_STEP_TIMEOUT_SECONDS))}
+    return {"max_tokens": int(limits.PIPELINE_STEP_MAX_OUTPUT_TOKENS), "timeout": max(1.0, float(limits.PIPELINE_STEP_TIMEOUT_SECONDS))}

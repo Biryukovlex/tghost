@@ -290,12 +290,14 @@ def _choose(material: dict[str, Any], stories: list[Story], *, owner_material: b
     return story, similarity, similarity > threshold
 
 
-def _write_instructions() -> str:
+def _write_instructions(brief: dict[str, Any] | None = None) -> str:
+    low, high = (brief or {}).get("target_length") or (0, 0)
+    length = f"Keep the post between {low} and {high} characters, like the channel's top posts. " if high else ""
     return ("You are the channel's writer. Write one Telegram post that looks and sounds like the channel's best posts, in the "
             "language of those posts. Use the channel's Markdown dialect: **bold**, *italic*, ~~strike~~, `code`, [text](https://url), "
             "> quote; no headings, images or HTML. Follow the channel profile's editorial rules. Use only facts from the supplied pages "
             "or the owner's notes, and name limitations. Do not copy sentences or distinctive phrases from the channel's existing posts. "
-            "Mention the story's publication date naturally where it matters; never present older news as today's.")
+            "Mention the story's publication date naturally where it matters; never present older news as today's. " + length)
 
 
 def _style_prompt(brief: dict[str, Any]) -> str:
@@ -322,14 +324,15 @@ async def _write_and_check(job: _Job, material: dict[str, Any], request: str, st
               f"Channel profile:\n{material['profile'] or '(not built yet)'}\n\n{_style_prompt(brief)}\n\n"
               + (f"Story to write about:\n{story.model_dump_json()}\n\n" if story else "")
               + "\n\n".join(evidence))
-    post = await job.ask("write", PostText, _write_instructions(), prompt, light=False)
+    post = await job.ask("write", PostText, _write_instructions(brief), prompt, light=False)
     issues = _post_issues(material, post.body)
     job.steps["checks"] = {"issues": issues}
     if issues:
         # The fix improves a complete post; if the model fails here, keep the written post.
         try:
-            post = await job.ask("fix", PostText, _write_instructions() + " Fix only the listed issues and keep everything else.",
-                                 prompt + "\n\nYOUR DRAFT:\n" + post.body + "\n\nISSUES TO FIX:\n- " + "\n- ".join(issues), light=False)
+            # Fixing named issues is a mechanical edit: low reasoning effort keeps it fast and within the output cap.
+            post = await job.ask("fix", PostText, _write_instructions(brief) + " Fix only the listed issues and keep everything else.",
+                                 prompt + "\n\nYOUR DRAFT:\n" + post.body + "\n\nISSUES TO FIX:\n- " + "\n- ".join(issues), light=True)
         except (UnexpectedModelBehavior, ModelAPIError, UsageLimitExceeded) as exc:
             job.warnings.append(f"The fix step failed ({_describe(exc)}); the written draft was saved unfixed.")
         job.steps["checks"]["after_fix"] = _post_issues(material, post.body)
