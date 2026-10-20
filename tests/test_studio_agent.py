@@ -72,8 +72,11 @@ def test_production_model_requires_openrouter_key_without_test_mode():
 def test_default_agent_output_budget_supports_evidence_backed_answers():
     from app import limits
 
-    assert limits.MAX_OUTPUT_TOKENS == 8192
-    assert limits.RUN_TIMEOUT_SECONDS == 300
+    # Output is bounded per model request (reasoning included); a run-level
+    # safety cap covers the chat turns plus one post pipeline job.
+    assert limits.MAX_OUTPUT_TOKENS == 16_384
+    assert limits.MAX_RUN_OUTPUT_TOKENS >= 4 * limits.MAX_OUTPUT_TOKENS
+    assert limits.RUN_TIMEOUT_SECONDS > limits.PIPELINE_TIMEOUT_SECONDS
     assert limits.MAX_TOOL_CALLS == 12
 
 

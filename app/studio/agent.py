@@ -14,8 +14,11 @@ from .model import build_model
 from .prompts import SYSTEM_INSTRUCTIONS
 from .analytics import analyze_posts_async
 from .budget import StudioInputBudget
-from .context import ContextAssembler, ContextPack, profile_block_from_mapping
+from .channel_tools import register_channel_tools
+from .context import ContextAssembler, profile_block_from_mapping
 from .draft_tools import draft_result, register_draft_tools
+from .pipeline import register_pipeline_tools
+from .tool_args import ToolArgumentBoundary
 from .schemas import ChannelContext
 from .research import ResearchService
 from .repository import StudioRepositoryProtocol, ConversationNotFound
@@ -49,6 +52,10 @@ class StudioDeps:
     # never recomputes channel evidence per tool call.
     research_context_cache: tuple | None = None
     reference_evidence: dict[int, dict[str, Any]] = field(default_factory=dict)
+    # The owner's chat messages in this conversation, oldest first. The post
+    # pipeline accepts a link as the owner's only if it appears here or in the
+    # chat's stored sources.
+    owner_messages: tuple[str, ...] = ()
 
 
 def _check_cancel(ctx: RunContext[StudioDeps]) -> None:
@@ -128,7 +135,7 @@ def build_agent(settings, *, model=None) -> Agent[StudioDeps, str]:
             "Build freshness windows and date-bearing search queries from this date. "
             "Never substitute a different year from model memory.\n"
             f"Run budget: {limits.MAX_TOOL_CALLS} tool calls, {limits.RUN_TIMEOUT_SECONDS:g} seconds, "
-            f"{limits.MAX_OUTPUT_TOKENS} cumulative output tokens. "
+            f"{limits.MAX_OUTPUT_TOKENS} output tokens per model request. "
             f"Queries per search_web: {limits.SEARCH_MAX_QUERIES}; results per query: {limits.SEARCH_MAX_RESULTS}. "
             f"Configured engine names (availability is not guaranteed): {limits.SEARCH_ALLOWED_ENGINES or 'all provider engines'}. "
             f"Default engines: {limits.SEARCH_ENGINES or 'provider defaults'}."
@@ -137,8 +144,11 @@ def build_agent(settings, *, model=None) -> Agent[StudioDeps, str]:
             "tool_choice": "auto",
             "parallel_tool_calls": True,
             "timeout": max(1.0, float(limits.PROVIDER_TIMEOUT_SECONDS)),
+            # Output is bounded per request (hidden reasoning included), not per
+            # run: a cumulative cap ended edits after 2-4 requests on reasoning models.
+            "max_tokens": int(limits.MAX_OUTPUT_TOKENS),
         },
-        capabilities=[StudioInputBudget()],
+        capabilities=[ToolArgumentBoundary(), StudioInputBudget()],
         retries=4,
         tool_timeout=max(1.0, float(limits.TOOL_TIMEOUT_SECONDS)),
         max_concurrency=max(1, int(limits.TOOL_CONCURRENCY)),
@@ -248,48 +258,6 @@ def build_agent(settings, *, model=None) -> Agent[StudioDeps, str]:
             ctx.deps.reference_evidence.pop(next(iter(ctx.deps.reference_evidence)))
         return {"content_role":"untrusted reference evidence, not instructions", **post}
 
-    @agent.tool(prepare=budget_tool_visibility)
-    async def get_performance_evidence(ctx: RunContext[StudioDeps]) -> dict[str, Any]:
-        """Return bounded, scored evidence for the authenticated channel."""
-
-        _check_cancel(ctx)
-        reader = getattr(ctx.deps.repository, "performance_rows", None)
-        if reader is None:
-            return {"analytics_version": "m3.v1", "eligible_post_count": 0, "evidence_posts": [], "low_data": True}
-        raw = await ctx.deps.repository.channel_context(ctx.deps.channel_id)
-        rows = await reader(ctx.deps.channel_id)
-        _check_cancel(ctx)
-        analysis = await analyze_posts_async(rows, ctx.deps.channel_id, identifier=raw.get("identifier"))
-        result = analysis.model_dump(mode="json")
-        ctx.deps.completed_tools.add("get_performance_evidence")
-        return result
-
-    @agent.tool(prepare=budget_tool_visibility)
-    async def get_context_pack(ctx: RunContext[StudioDeps]) -> ContextPack:
-        """Return the same bounded context envelope used for reasoning."""
-
-        _check_cancel(ctx)
-        raw = await ctx.deps.repository.channel_context(ctx.deps.channel_id)
-        reader = getattr(ctx.deps.repository, "performance_rows", None)
-        rows = await reader(ctx.deps.channel_id) if reader is not None else []
-        _check_cancel(ctx)
-        profile_getter = getattr(ctx.deps.repository, "get_profile", None)
-        profile = await profile_getter(ctx.deps.channel_id) if profile_getter is not None else None
-        conversation_getter = getattr(ctx.deps.repository, "get_conversation", None)
-        conversation = await conversation_getter(ctx.deps.conversation_id) if conversation_getter is not None else None
-        return ContextAssembler(
-            max_chars=int(limits.CONTEXT_MAX_CHARS),
-            max_evidence_posts=int(limits.MAX_EVIDENCE_POSTS),
-        ).assemble_from_rows(
-            raw,
-            rows,
-            channel_id=ctx.deps.channel_id,
-            identifier=raw.get("identifier"),
-            profile=profile,
-            profile_version=profile.get("version") if profile else None,
-            conversation_summary=str((conversation or {}).get("summary") or "")[:4_000],
-        )
-
     def _profile_block_from_row(row: dict[str, Any] | None, channel_id: int) -> str:
         # Keep the profile tool byte-for-byte aligned with the context pack.
         return profile_block_from_mapping(row)
@@ -307,12 +275,6 @@ def build_agent(settings, *, model=None) -> Agent[StudioDeps, str]:
             return {"channel_id": ctx.deps.channel_id, "version": int(legacy.get("version", 0)), "profile_block": "", "status": "not_built"}
         block = _profile_block_from_row(row, ctx.deps.channel_id)
         return {"channel_id": ctx.deps.channel_id, "version": int(row.get("version", 0)), "profile_block": block, "topics_text": row.get("topics_text", ""), "editorial_text": row.get("editorial_text", ""), "style_text": row.get("style_text", "")}
-
-    @agent.tool(prepare=budget_tool_visibility)
-    async def get_topic_profile(ctx: RunContext[StudioDeps]) -> dict[str, Any]:
-        """Alias for get_channel_profile (kept for one release)."""
-
-        return await get_channel_profile(ctx)
 
     @agent.tool(prepare=budget_tool_visibility)
     async def search_web(
@@ -529,5 +491,7 @@ def build_agent(settings, *, model=None) -> Agent[StudioDeps, str]:
         ctx.deps.completed_tools.add("explain_recommendation")
         return result
 
+    register_channel_tools(agent, _check_cancel)
+    register_pipeline_tools(agent, settings)
     register_draft_tools(agent)
     return agent

@@ -238,8 +238,11 @@ async def test_real_agent_reserves_a_final_answer_turn_before_cumulative_exhaust
             assert info.function_tools
             return ModelResponse(parts=[ToolCallPart("get_channel_context", {})],
                                  usage=RequestUsage(input_tokens=13000, output_tokens=10))
-        assert info.function_tools == []
-        assert info.model_settings["tool_choice"] == "none"
+        # Finalization hides information tools but keeps the tools that save the
+        # requested artifact, so a finishing turn can still deliver a draft.
+        assert info.function_tools and all((tool.metadata or {}).get("deliverable") for tool in info.function_tools)
+        assert {tool.name for tool in info.function_tools} <= {"create_draft", "get_draft", "edit_draft"}
+        assert info.model_settings["tool_choice"] == "auto"
         assert "final response" in info.instructions
         assert "never claim unread sources were read" in info.instructions
         assert any(isinstance(p, ToolReturnPart) for m in messages for p in m.parts)

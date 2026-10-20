@@ -134,6 +134,7 @@ class SourceDocument:
     injection_flags: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
     provenance: dict[str, Any] = field(default_factory=dict)
+    published_at: datetime | None = None
 
     @property
     def blocked(self) -> bool:
@@ -159,13 +160,39 @@ class SourceDocument:
             "injection_flags": list(self.injection_flags),
             "warnings": list(self.warnings),
             "provenance": dict(self.provenance),
+            "published_at": _iso(self.published_at),
         }
 
     as_dict = model_dump
 
 
+# Standard publication-date metadata, in order of preference: Open Graph
+# article tags, schema.org microdata, then common publisher meta names.
+_DATE_META = ("article:published_time", "og:article:published_time", "datepublished", "publishdate", "publish-date",
+              "pubdate", "parsely-pub-date", "sailthru.date", "dc.date.issued", "dcterms.issued", "dc.date", "date")
+_JSON_DATE = re.compile(r'"datePublished"\s*:\s*"([^"]{8,40})"')
+
+
+def parse_published_at(value: str | None) -> datetime | None:
+    """Parse an ISO-8601 date or datetime from page metadata; naive values are UTC."""
+    if not value:
+        return None
+    text = str(value).strip()
+    if not re.match(r"^\d{4}-\d{2}-\d{2}", text):
+        return None
+    text = text.replace("Z", "+00:00").replace("z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(text if "T" in text or " " in text else text[:10])
+    except ValueError:
+        try:
+            parsed = datetime.fromisoformat(text[:10])
+        except ValueError:
+            return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
 class _HTMLTextExtractor(HTMLParser):
-    """Tiny non-executing HTML extractor with title handling."""
+    """Tiny non-executing HTML extractor with title and publication-date handling."""
 
     _SKIP = {"script", "style", "noscript", "template", "svg", "canvas", "nav", "footer"}
 
@@ -173,11 +200,39 @@ class _HTMLTextExtractor(HTMLParser):
         super().__init__(convert_charrefs=True)
         self._skip_depth = 0
         self._in_title = False
+        self._in_ld_json = False
         self.title_parts: list[str] = []
         self.parts: list[str] = []
+        self._meta_dates: dict[str, str] = {}
+        self._ld_json: list[str] = []
+        self._time_dates: list[str] = []
+
+    def published_at(self) -> datetime | None:
+        for name in _DATE_META:
+            found = parse_published_at(self._meta_dates.get(name))
+            if found:
+                return found
+        for match in _JSON_DATE.finditer(" ".join(self._ld_json)):
+            found = parse_published_at(match.group(1))
+            if found:
+                return found
+        for value in self._time_dates[:1]:
+            found = parse_published_at(value)
+            if found:
+                return found
+        return None
 
     def handle_starttag(self, tag: str, attrs) -> None:
         tag = tag.lower()
+        values = {str(key).lower(): str(value or "") for key, value in attrs}
+        if tag == "meta":
+            name = (values.get("property") or values.get("name") or values.get("itemprop") or "").lower()
+            if name in _DATE_META and values.get("content") and name not in self._meta_dates:
+                self._meta_dates[name] = values["content"]
+        elif tag == "time" and values.get("datetime"):
+            self._time_dates.append(values["datetime"])
+        elif tag == "script" and "ld+json" in values.get("type", "").lower():
+            self._in_ld_json = True
         if tag in self._SKIP:
             self._skip_depth += 1
         if tag == "title" and self._skip_depth == 0:
@@ -187,6 +242,8 @@ class _HTMLTextExtractor(HTMLParser):
 
     def handle_endtag(self, tag: str) -> None:
         tag = tag.lower()
+        if tag == "script":
+            self._in_ld_json = False
         if tag == "title":
             self._in_title = False
         if tag in self._SKIP and self._skip_depth:
@@ -195,6 +252,8 @@ class _HTMLTextExtractor(HTMLParser):
             self.parts.append("\n")
 
     def handle_data(self, data: str) -> None:
+        if self._in_ld_json and sum(len(part) for part in self._ld_json) < 200_000:
+            self._ld_json.append(data)
         if self._skip_depth:
             return
         if self._in_title:
@@ -404,12 +463,14 @@ class SafeSourceReader:
                     except LookupError:
                         decoded = bytes(body).decode("utf-8", errors="replace")
                     title = ""
+                    published_at: datetime | None = None
                     if content_type in {"text/html", "application/xhtml+xml"}:
                         parser = _HTMLTextExtractor()
                         try:
                             parser.feed(decoded)
                             parser.close()
                             title, decoded = parser.extracted()
+                            published_at = parser.published_at()
                         except (ValueError, AssertionError):
                             decoded = _clean_lines(html.unescape(re.sub(r"<[^>]+>", " ", decoded)), self.max_chars)
                     else:
@@ -449,6 +510,7 @@ class SafeSourceReader:
                         source_id=source_id,
                         injection_flags=injection_flags,
                         warnings=warnings,
+                        published_at=published_at,
                         provenance={
                             "retrieved_at": _iso(fetched_at),
                             "canonical_url": final_canonical,

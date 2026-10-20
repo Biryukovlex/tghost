@@ -157,11 +157,38 @@ def _agent_result(payload: dict[str, Any]) -> dict[str, Any]:
                 if len(summary) > 600:
                     story["summary"] = summary[:599].rstrip() + "…"
                     story["summary_truncated"] = True
+    if size() > limits.TOOL_RESULT_MAX_CHARS and payload.get("channel_evidence_sets"):
+        # Channel evidence is the same for every research call and can be read
+        # with get_performance_evidence; read page text cannot. Drop evidence
+        # first so a large read never loses the pages it just fetched.
+        payload["channel_evidence_sets"] = {}
+        payload["channel_evidence_note"] = "Channel evidence was omitted to keep the page text; use get_performance_evidence."
+    documents = payload.get("documents") or []
+    if size() > limits.TOOL_RESULT_MAX_CHARS and documents:
+        # Shorten every page evenly instead of removing any page.
+        overflow = size() - limits.TOOL_RESULT_MAX_CHARS
+        texts = [len(str(document.get("text") or "")) for document in documents]
+        keep = max(600, max(texts) - overflow // max(1, len(documents)) - 1)
+        for document, length in zip(documents, texts):
+            if length > keep:
+                document["text"] = str(document["text"])[:keep].rstrip() + "…"
+                document["text_truncated"] = True
     while sources and size() > limits.TOOL_RESULT_MAX_CHARS:
         omitted.insert(0, str(sources.pop()["source_id"]))
         payload["omitted_source_ids"] = omitted
         payload["continuation"] = "Use get_research_sources with omitted_source_ids to read the remaining results."
-    if size() > limits.TOOL_RESULT_MAX_CHARS:
+    if size() > limits.TOOL_RESULT_MAX_CHARS and documents:
+        # Story groupings are derived metadata; the read pages are the evidence.
+        for key in ("stories", "suggestions"):
+            if payload.get(key):
+                payload[key] = []
+                payload["stories_note"] = "Story groupings were omitted to keep the page text within the result limit."
+        for document in documents:
+            if size() <= limits.TOOL_RESULT_MAX_CHARS:
+                break
+            document["text"] = str(document.get("text") or "")[:600]
+            document["text_truncated"] = True
+    if size() > limits.TOOL_RESULT_MAX_CHARS and not documents:
         # Pathological diagnostics/evidence must not bypass the final bound.
         # Keep all source identities and explicitly offer the scoped archive.
         payload = {
@@ -187,10 +214,12 @@ def _document_for_agent(document: SourceDocument) -> dict[str, Any]:
             "status_code",
             "title",
             "fetched_at",
+            "published_at",
             "source_id",
             "injection_flags",
             "warnings",
         )
+        if key in value
     } | {"text": str(value.get("text") or value.get("excerpt") or "")[:3_500]}
 
 

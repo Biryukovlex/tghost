@@ -246,6 +246,7 @@ class StudioRepositoryProtocol(Protocol):
     async def create_draft(self, *, conversation_id: uuid.UUID, channel_id: int, payload: dict[str, Any], origin: str = "generated", instruction: str = "") -> dict[str, Any]: ...
     async def get_draft(self, draft_id: uuid.UUID, *, conversation_id: uuid.UUID | None = None, channel_id: int | None = None) -> dict[str, Any] | None: ...
     async def get_current_draft(self, *, conversation_id: uuid.UUID, channel_id: int) -> dict[str, Any] | None: ...
+    async def recent_draft_bodies(self, channel_id: int, *, limit: int = 100) -> list[dict[str, Any]]: ...
     async def update_draft(self, *, draft_id: uuid.UUID, payload: dict[str, Any], expected_revision: int | None = None, origin: str = "user_edit", instruction: str = "", new_version: bool = True) -> dict[str, Any]: ...
     async def save_draft(self, *, draft_id: uuid.UUID, payload: dict[str, Any], expected_revision: int, instruction: str = "", new_version: bool = False) -> dict[str, Any]: ...
     async def revise_draft(self, *, draft_id: uuid.UUID, payload: dict[str, Any], instruction: str = "") -> dict[str, Any]: ...
@@ -1038,6 +1039,16 @@ class StudioRepository:
             )
             row = result.mappings().first()
         return _draft_public(dict(row)) if row else None
+
+    async def recent_draft_bodies(self, channel_id: int, *, limit: int = 100) -> list[dict[str, Any]]:
+        """Current text of this channel's recent drafts, newest first, for novelty checks."""
+        result = await self.db._execute(
+            """SELECT conversation_id, body FROM studio_drafts
+                WHERE workspace_id=:workspace_id AND channel_id=:channel_id AND coalesce(body, '') <> ''
+                ORDER BY updated_at DESC, created_at DESC LIMIT :limit""",
+            {"channel_id": int(channel_id), "limit": max(1, min(int(limit), 1000))},
+        )
+        return [{"conversation_id": row["conversation_id"], "body": str(row["body"])} for row in result.mappings().all()]
 
     async def update_draft(
         self,
@@ -2753,6 +2764,11 @@ class MemoryStudioRepository:
             return None
         return _draft_public(max(rows, key=lambda item: item["updated_at"]))
 
+
+    async def recent_draft_bodies(self, channel_id: int, *, limit: int = 100) -> list[dict[str, Any]]:
+        rows = [row for row in self.drafts.values() if int(row["channel_id"]) == int(channel_id) and str(row.get("body") or "")]
+        rows.sort(key=lambda row: str(row.get("updated_at") or row.get("created_at") or ""), reverse=True)
+        return [{"conversation_id": row["conversation_id"], "body": str(row["body"])} for row in rows[: max(1, int(limit))]]
     async def update_draft(
         self,
         *,

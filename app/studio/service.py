@@ -743,6 +743,10 @@ class StudioService:
             research=self.research_service,
             on_model_response=persist_model_usage,
             on_input_budget=observe_input_budget,
+            owner_messages=tuple(
+                [str(row.get("content") or "") for row in history_rows if row.get("role") == "user"]
+                + [_text_from_user_message(user_message)]
+            ),
         )
 
         async def emit_terminal_notice(current: dict[str, Any] | None) -> bool:
@@ -852,9 +856,11 @@ class StudioService:
                             deps=deps,
                             usage=run_usage,
                             usage_limits=UsageLimits(
-                                request_limit=max(2, int(limits.MAX_TOOL_CALLS) + 2),
-                                tool_calls_limit=max(1, int(limits.MAX_TOOL_CALLS)),
-                                output_tokens_limit=max(64, int(limits.MAX_OUTPUT_TOKENS)),
+                                # A post pipeline job adds its own model requests and a
+                                # finalizing turn may still save the draft.
+                                request_limit=max(2, int(limits.MAX_TOOL_CALLS) + 2 + int(limits.PIPELINE_MAX_REQUESTS)),
+                                tool_calls_limit=max(1, int(limits.MAX_TOOL_CALLS) + int(limits.DELIVERABLE_TOOL_CALLS)),
+                                output_tokens_limit=max(64, int(limits.MAX_RUN_OUTPUT_TOKENS)),
                                 input_tokens_limit=int(limits.MAX_RUN_INPUT_TOKENS),
                                 per_request_input_tokens_limit=int(limits.MAX_INPUT_TOKENS),
                             ),

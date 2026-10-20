@@ -58,6 +58,34 @@ def _compact(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+RESEARCH_TOOLS = frozenset({"search_web", "read_sources", "compare_sources", "find_novel_topics", "get_research_sources"})
+# Tools whose results the model edits from; they are never compacted.
+DRAFT_TOOLS = frozenset({"get_draft", "list_draft_versions", "create_draft", "edit_draft"})
+
+
+def is_deliverable(tool_def: Any) -> bool:
+    """A deliverable tool saves the requested artifact; finalization keeps it."""
+    return bool((getattr(tool_def, "metadata", None) or {}).get("deliverable"))
+
+
+def _shrink(value: Any, *, depth: int = 0) -> Any:
+    if isinstance(value, str):
+        return value if len(value) <= 300 else value[:299].rstrip() + "…"
+    if isinstance(value, list):
+        return [_shrink(item, depth=depth + 1) for item in value[:12]]
+    if isinstance(value, dict):
+        if depth > 4:
+            return {"omitted": True}
+        return {key: _shrink(item, depth=depth + 1) for key, item in value.items()}
+    return value
+
+
+def _compact_any(payload: dict[str, Any]) -> dict[str, Any]:
+    """Projection for any non-research result: identifiers and short fields stay."""
+    return {**_shrink(payload), "status": "compacted",
+            "continuation": "This older tool result was shortened to fit the context. Call the tool again for full details."}
+
+
 def _instructions(request: ModelRequestContext) -> list[InstructionPart]:
     parts = request.model_request_parameters.instruction_parts
     if parts is not None:
@@ -105,7 +133,8 @@ class StudioInputBudget(AbstractCapability):
         return StudioInputBudget()
 
     async def before_tool_execute(self, ctx, *, call, tool_def, args):
-        if self._finalizing:
+        # Finalization keeps only the tools that save the requested artifact.
+        if self._finalizing and not is_deliverable(tool_def):
             raise UsageLimitExceeded("The remaining run budget is reserved for a final response.")
         return args
 
@@ -122,6 +151,7 @@ class StudioInputBudget(AbstractCapability):
         messages = deepcopy(request_context.messages)
         seen: set[str] = set()
         research: list[tuple[ToolReturnPart, dict[str, Any]]] = []
+        others: list[tuple[ToolReturnPart, dict[str, Any]]] = []
         for message in messages:
             for part in message.parts:
                 if not isinstance(part, ToolReturnPart):
@@ -134,8 +164,10 @@ class StudioInputBudget(AbstractCapability):
                     payload["channel_evidence_sets"] = {key: value for key, value in evidence.items() if key not in seen}
                     seen.update(evidence)
                 part.content = payload
-                if part.tool_name in {"search_web", "read_sources", "compare_sources", "find_novel_topics", "get_research_sources"}:
+                if part.tool_name in RESEARCH_TOOLS:
                     research.append((part, payload))
+                elif part.tool_name not in DRAFT_TOOLS:
+                    others.append((part, payload))
         request_context.messages = messages
         def count() -> int:
             return estimate_request_tokens(request_context)
@@ -144,11 +176,18 @@ class StudioInputBudget(AbstractCapability):
         target = min(limits.MAX_INPUT_TOKENS, remaining)
         compacted = 0
         # Prefer older results; the latest can also yield to the hard bound.
-        # All detailed records remain in the scoped archive, never overwritten.
+        # Research results go first because they are the largest; every other
+        # result follows through a generic projection. Detailed records remain
+        # in the scoped archive or can be fetched again, never overwritten.
         for part, payload in research:
             if count() <= target:
                 break
             part.content = _compact(payload)
+            compacted += 1
+        for part, payload in others:
+            if count() <= target:
+                break
+            part.content = _compact_any(payload)
             compacted += 1
         estimated = count()
         # Fund this request and another similarly sized turn before permitting
@@ -157,14 +196,16 @@ class StudioInputBudget(AbstractCapability):
         self._finalizing = finalizing
         if finalizing:
             params = request_context.model_request_parameters
+            deliverable = [tool for tool in params.function_tools if is_deliverable(tool)]
             instructions = _instructions(request_context)
             instructions.append(InstructionPart(content=(
-                "The remaining run budget is reserved for your final response. Tools are unavailable for this turn. "
-                "Answer the latest user request using evidence already present. State material gaps and research "
+                "The remaining run budget is reserved for your final response. Information tools are unavailable for this turn"
+                + ("; you may still save the requested draft with the remaining save tool. " if deliverable else ". ")
+                + "Answer the latest user request using evidence already present. State material gaps and research "
                 "limits; never claim unread sources were read, missing details verified, or unsaved artifacts saved."
             )))
-            request_context.model_request_parameters = replace(params, function_tools=[], instruction_parts=instructions)
-            request_context.model_settings = {**(request_context.model_settings or {}), "tool_choice": "none"}
+            request_context.model_request_parameters = replace(params, function_tools=deliverable, instruction_parts=instructions)
+            request_context.model_settings = {**(request_context.model_settings or {}), "tool_choice": "auto" if deliverable else "none"}
             estimated = count()
         callback = getattr(getattr(ctx, "deps", None), "on_input_budget", None)
         if callback is not None:

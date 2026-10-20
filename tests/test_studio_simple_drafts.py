@@ -28,16 +28,20 @@ async def test_create_read_edit_and_read_history_preserve_complete_content():
     body = "I could not open the page.\n\nSources:\nhttps://example.test/original"
     first = await tools["create_draft"].function(ctx, title="First", body=body, source_links=["https://example.test/a"])
     assert first["status"] == "created"
-    assert first["draft"]["body"] == body  # no hidden rewriting
+    # Saves report measurements; the caller already holds the text it saved.
+    assert "body" not in first["draft"] and first["draft"]["body_chars"] == len(body)
+    assert (await tools["get_draft"].function(ctx))["draft"]["body"] == body  # no hidden rewriting
     duplicate = await tools["create_draft"].function(ctx, title="Second", body="Duplicate")
     assert duplicate["error"]["code"] == "draft_exists"
     second = await tools["edit_draft"].function(ctx, expected_revision=1, title="Second", source_links=["https://example.test/b"])
-    assert second["draft"] == {"version": 2, "revision": 2, "title": "Second", "body": body,
-                               "source_links": ["https://example.test/b"], "media_content": []}
+    assert second["draft"] == {"version": 2, "revision": 2, "title": "Second", "source_links": ["https://example.test/b"],
+                               "media_content": [], "body_chars": len(body), "previous_body_chars": len(body), "length_ratio": 1.0}
     older = await tools["get_draft"].function(ctx, version=1)
     assert older["draft"] == {"version": 1, "revision": 2, "title": "First", "body": body,
-                              "source_links": ["https://example.test/a"], "media_content": []}
-    assert (await tools["get_draft"].function(ctx))["draft"] == second["draft"]
+                              "source_links": ["https://example.test/a"], "media_content": [], "body_chars": len(body)}
+    assert (await tools["get_draft"].function(ctx))["draft"] == {"version": 2, "revision": 2, "title": "Second", "body": body,
+                                                                 "source_links": ["https://example.test/b"], "media_content": [],
+                                                                 "body_chars": len(body)}
     history = await tools["list_draft_versions"].function(ctx)
     assert [row["version"] for row in history["versions"]] == [1, 2]
     await tools["edit_draft"].function(ctx, expected_revision=2, body="Edited", source_links=[])

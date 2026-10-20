@@ -134,6 +134,11 @@ const TOOL_ACTIVITY_LABELS: Record<string, string> = {
   list_draft_versions: "Reading draft history",
   create_draft: "Building the draft artifact",
   edit_draft: "Revising the draft artifact",
+  get_performance_evidence: "Analyzing post performance",
+  read_channel_posts: "Reading channel posts",
+  list_channel_posts: "Browsing channel posts",
+  write_post: "Writing the post: research, style and checks",
+  revise_draft: "Revising the draft",
 };
 
 const TOOL_ACTIVITY_RESULT_LABELS: Record<string, string> = {
@@ -151,6 +156,11 @@ const TOOL_ACTIVITY_RESULT_LABELS: Record<string, string> = {
   list_draft_versions: "Draft history loaded",
   create_draft: "Draft artifact saved",
   edit_draft: "Draft revision saved",
+  get_performance_evidence: "Performance overview received",
+  read_channel_posts: "Channel posts loaded",
+  list_channel_posts: "Channel post index loaded",
+  write_post: "Post job finished",
+  revise_draft: "Revision job finished",
 };
 
 function toolActivityLabel(toolName: unknown): string {
