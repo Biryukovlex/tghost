@@ -234,3 +234,38 @@ async def test_a_failed_fix_step_keeps_the_written_post(monkeypatch):
     assert any("fix step failed" in warning for warning in returned["warnings"])
     draft = await repository.get_current_draft(conversation_id=chat["id"], channel_id=1)
     assert draft["body"] == copied
+
+
+@pytest.mark.asyncio
+async def test_turn_completes_even_when_older_results_are_compacted(monkeypatch):
+    from app import limits
+    # A small input budget forces compaction of the large channel results that precede the job.
+    monkeypatch.setattr(limits, "MAX_INPUT_TOKENS", 10_000)
+    research = StubResearch(documents={OLD_LINK: "Payments framework details. " * 30})
+    repository = PostsRepository()
+    chat = await repository.create_conversation(channel_id=1)
+    deps = StudioDeps(repository=repository, workspace_id=repository.workspace_id, conversation_id=chat["id"], channel_id=1,
+                      cancel_event=asyncio.Event(), research=research, owner_messages=(f"Write about {OLD_LINK}",))
+    model, seen = scripted({"tool": "write_post", "args": {"research": "none", "links": [OLD_LINK]}})
+    original = model.function
+    state = {"main": 0}
+
+    def channel_first(messages, info):
+        if "You are the TGhost agent" in (info.instructions or ""):
+            state["main"] += 1
+            if state["main"] == 1:
+                return ModelResponse(parts=[ToolCallPart("get_performance_evidence", {}), ToolCallPart("list_channel_posts", {"limit": 20})])
+            if state["main"] == 2:
+                return ModelResponse(parts=[ToolCallPart("write_post", {"research": "none", "links": [OLD_LINK]})])
+        return original(messages, info)
+
+    model.function = channel_first
+    snapshots = []
+
+    async def observe(snapshot):
+        snapshots.append(snapshot)
+
+    deps.on_input_budget = observe
+    await build_agent(Settings(studio_test_mode=True), model=model).run(f"Write about {OLD_LINK}", deps=deps)
+    assert snapshots[-1]["compacted_results"] >= 1  # older channel results had to be shortened
+    assert seen[-1] == "summary-tools:"  # and the finished job still ended the turn

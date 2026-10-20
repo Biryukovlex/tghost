@@ -81,8 +81,8 @@ def _shrink(value: Any, *, depth: int = 0) -> Any:
 
 
 def _compact_any(payload: dict[str, Any]) -> dict[str, Any]:
-    """Projection for any non-research result: identifiers and short fields stay."""
-    return {**_shrink(payload), "status": "compacted",
+    """Projection for any non-research result: identifiers, status and short fields stay."""
+    return {**_shrink(payload), "compacted": True,
             "continuation": "This older tool result was shortened to fit the context. Call the tool again for full details."}
 
 
@@ -166,6 +166,8 @@ class StudioInputBudget(AbstractCapability):
         seen: set[str] = set()
         research: list[tuple[ToolReturnPart, dict[str, Any]]] = []
         others: list[tuple[ToolReturnPart, dict[str, Any]]] = []
+        job_tools = {tool.name for tool in request_context.model_request_parameters.function_tools
+                     if (getattr(tool, "metadata", None) or {}).get("completes_turn")}
         for message in messages:
             for part in message.parts:
                 if not isinstance(part, ToolReturnPart):
@@ -180,9 +182,11 @@ class StudioInputBudget(AbstractCapability):
                 part.content = payload
                 if part.tool_name in RESEARCH_TOOLS:
                     research.append((part, payload))
-                elif part.tool_name not in DRAFT_TOOLS:
+                elif part.tool_name not in DRAFT_TOOLS and part.tool_name not in job_tools:
+                    # Job results are small and carry the turn's outcome; they are never compacted.
                     others.append((part, payload))
         request_context.messages = messages
+        job_done = _job_completed(messages, request_context.model_request_parameters.function_tools)
         def count() -> int:
             return estimate_request_tokens(request_context)
 
@@ -205,7 +209,7 @@ class StudioInputBudget(AbstractCapability):
             compacted += 1
         estimated = count()
         params = request_context.model_request_parameters
-        if _job_completed(messages, params.function_tools):
+        if job_done:
             # A job tool delivered the turn's artifact: summarize, do not redo work.
             instructions = _instructions(request_context)
             instructions.append(InstructionPart(content=(
