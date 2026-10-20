@@ -326,8 +326,12 @@ async def _write_and_check(job: _Job, material: dict[str, Any], request: str, st
     issues = _post_issues(material, post.body)
     job.steps["checks"] = {"issues": issues}
     if issues:
-        post = await job.ask("fix", PostText, _write_instructions() + " Fix only the listed issues and keep everything else.",
-                             prompt + "\n\nYOUR DRAFT:\n" + post.body + "\n\nISSUES TO FIX:\n- " + "\n- ".join(issues), light=False)
+        # The fix improves a complete post; if the model fails here, keep the written post.
+        try:
+            post = await job.ask("fix", PostText, _write_instructions() + " Fix only the listed issues and keep everything else.",
+                                 prompt + "\n\nYOUR DRAFT:\n" + post.body + "\n\nISSUES TO FIX:\n- " + "\n- ".join(issues), light=False)
+        except (UnexpectedModelBehavior, ModelAPIError, UsageLimitExceeded) as exc:
+            job.warnings.append(f"The fix step failed ({_describe(exc)}); the written draft was saved unfixed.")
         job.steps["checks"]["after_fix"] = _post_issues(material, post.body)
     return post
 
@@ -452,29 +456,43 @@ async def revise_draft_job(job: _Job, *, instruction: str) -> dict[str, Any]:
     getter = getattr(repository, "get_profile", None)
     profile = await getter(deps.channel_id) if getter is not None else None
     before = str(current.get("body") or "")
-    await job.ask("edit", str, (
-        "You revise the chat's existing draft on the owner's request. Call get_draft, then save the complete new body with "
-        "edit_draft. The save result reports the new length and the ratio to the old one: check it against the request and "
-        "save again if it does not match. Keep the channel's Markdown dialect and language. Follow the channel profile:\n"
-        + (profile_block_from_mapping(profile) if profile else "(not built yet)")),
-        f"Owner's request: {instruction}", light=False, tools=register_draft_tools, tool_calls=6)
+    edit_failure: Exception | None = None
+    try:
+        await job.ask("edit", str, (
+            "You revise the chat's existing draft on the owner's request. Call get_draft, then save the complete new body with "
+            "edit_draft. The save result reports the new length and the ratio to the old one: check it against the request and "
+            "save again if it does not match. Keep the channel's Markdown dialect and language. Follow the channel profile:\n"
+            + (profile_block_from_mapping(profile) if profile else "(not built yet)")),
+            f"Owner's request: {instruction}", light=False, tools=register_draft_tools, tool_calls=6)
+    except (UnexpectedModelBehavior, ModelAPIError, UsageLimitExceeded) as exc:
+        edit_failure = exc
+    # The saved draft, not the editor's closing message, decides whether the job succeeded.
     after = await repository.get_current_draft(conversation_id=deps.conversation_id, channel_id=deps.channel_id)
     body = str((after or {}).get("body") or "")
     changed = body != before
+    if edit_failure is not None and not changed:
+        raise edit_failure
+    if edit_failure is not None:
+        job.warnings.append(f"The editor's final message failed ({_describe(edit_failure)}); the saved version is complete.")
     return {"status": "edited" if changed else "unchanged",
             "draft": {"version": int((after or {}).get("current_version", 1)), "revision": (after or {}).get("revision"),
                       "body_chars": len(body), "previous_body_chars": len(before),
                       "length_ratio": round(len(body) / len(before), 2) if before else None},
-            "steps": job.steps,
+            "steps": job.steps, "warnings": job.warnings,
             "note": ("The new version is shown to the owner in the draft panel. Tell the owner in a few lines what changed. "
                      "Do not read the draft again unless asked.")}
+
+
+def _describe(exc: Exception) -> str:
+    status = getattr(exc, "status_code", None)
+    return f"HTTP {status}" if status else f"{type(exc).__name__}: {str(exc)[:160]}"
 
 
 def _model_failure(job: _Job, exc: Exception) -> dict[str, Any]:
     """A model failure inside a step ends the job, not the run; the chat agent explains it."""
     status = getattr(exc, "status_code", None)
     code = "model_rate_limited" if status == 429 else "model_step_failed"
-    detail = f"HTTP {status}" if status else type(exc).__name__
+    detail = _describe(exc)
     return {"status": "failed", "error": {"code": code, "step": job.current_step,
                                           "message": f"The model failed during the '{job.current_step}' step ({detail}). Saved research is kept; ask the owner to retry later."},
             "steps": job.steps}

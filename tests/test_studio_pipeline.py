@@ -208,3 +208,29 @@ async def test_a_rate_limited_step_fails_the_job_not_the_run(monkeypatch):
     assert returned["error"]["code"] == "model_rate_limited" and returned["error"]["step"] == "write"
     assert draft is None
     assert seen[-1].startswith("summary-tools:") and seen[-1] != "summary-tools:"  # a failed job leaves tools available
+
+
+@pytest.mark.asyncio
+async def test_a_failed_fix_step_keeps_the_written_post(monkeypatch):
+    from pydantic_ai import UnexpectedModelBehavior
+    research = StubResearch(documents={OLD_LINK: "Payments framework details. " * 30})
+    copied = "**Headline**\n\n" + synthetic_rows()[2]["text"].split("\n\n")[1] + " More words follow here."
+    model, seen = scripted({"tool": "write_post", "args": {"research": "none", "links": [OLD_LINK]}}, writer_body=copied)
+    original = model.function
+
+    def failing_fix(messages, info):
+        if (info.instructions or "").startswith("You are the channel's writer") and "Fix only" in (info.instructions or ""):
+            raise UnexpectedModelBehavior("Exceeded maximum retries for output validation")
+        return original(messages, info)
+
+    model.function = failing_fix
+    repository = PostsRepository()
+    chat = await repository.create_conversation(channel_id=1)
+    deps = StudioDeps(repository=repository, workspace_id=repository.workspace_id, conversation_id=chat["id"], channel_id=1,
+                      cancel_event=asyncio.Event(), research=research, owner_messages=(f"Write about {OLD_LINK}",))
+    result = await build_agent(Settings(studio_test_mode=True), model=model).run(f"Write about {OLD_LINK}", deps=deps)
+    returned = next(p.content for m in result.all_messages() for p in m.parts if isinstance(p, ToolReturnPart) and p.tool_name == "write_post")
+    assert returned["status"] == "saved"
+    assert any("fix step failed" in warning for warning in returned["warnings"])
+    draft = await repository.get_current_draft(conversation_id=chat["id"], channel_id=1)
+    assert draft["body"] == copied
