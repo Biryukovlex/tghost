@@ -56,6 +56,9 @@ class StudioDeps:
     # pipeline accepts a link as the owner's only if it appears here or in the
     # chat's stored sources.
     owner_messages: tuple[str, ...] = ()
+    # Input tokens spent inside pipeline jobs. They have their own allowance,
+    # so the chat agent's per-run input budget measures only its own context.
+    pipeline_input_tokens: int = 0
 
 
 def _check_cancel(ctx: RunContext[StudioDeps]) -> None:

@@ -162,6 +162,8 @@ class _Job:
                     raise
                 await asyncio.sleep(_retry_after(exc, attempt))
                 _check_cancel(self.ctx)
+        if hasattr(self.deps, "pipeline_input_tokens"):
+            self.deps.pipeline_input_tokens += self.ctx.usage.input_tokens - before[1]
         self.steps[step] = {"requests": self.ctx.usage.requests - before[0], "input_tokens": self.ctx.usage.input_tokens - before[1],
                             "output_tokens": self.ctx.usage.output_tokens - before[2],
                             "seconds": round(asyncio.get_running_loop().time() - started, 1)}

@@ -373,3 +373,17 @@ async def test_read_status_recovers_from_unknown_ids_before_accepting_an_answer(
     assert result.output == "One saved article has been read."
     assert len(calls) == 3
     assert deps.completed_tools == {"get_research_sources"}
+
+
+@pytest.mark.asyncio
+async def test_pipeline_input_has_its_own_allowance_outside_the_chat_budget():
+    request = _budget_request([ModelRequest(parts=[UserPromptPart("Summarize")])])
+    snapshots = []
+
+    async def observe(snapshot):
+        snapshots.append(snapshot)
+    # 190k used in total, 150k of it inside a pipeline job: the chat agent has spent 40k of its own budget.
+    deps = SimpleNamespace(on_input_budget=observe, pipeline_input_tokens=150_000)
+    await StudioInputBudget().before_model_request(SimpleNamespace(usage=RunUsage(input_tokens=190_000), deps=deps), request)
+    assert snapshots[-1]["remaining_input_tokens"] == limits.MAX_RUN_INPUT_TOKENS - 40_000
+    assert snapshots[-1]["finalizing"] is False

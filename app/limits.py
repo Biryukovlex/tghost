@@ -36,6 +36,7 @@ PIPELINE_TIMEOUT_SECONDS = 420.0  # one write_post or revise_draft job
 PIPELINE_STEP_TIMEOUT_SECONDS = 180.0  # one non-streamed model step; long posts take 60-90 s on free models
 PIPELINE_STEP_MAX_OUTPUT_TOKENS = 32_768  # one pipeline step; writing a long post with hidden reasoning reached 15k
 PIPELINE_MAX_REQUESTS = 16  # model requests one pipeline job may add to a run
+PIPELINE_MAX_INPUT_TOKENS = 96_000  # input tokens pipeline jobs may add on top of the chat agent's own run budget
 PIPELINE_MAX_QUERIES = 8  # search queries planned per discovery
 PIPELINE_MAX_LISTED = 30  # search results shown to the page picker
 PIPELINE_MAX_PAGES = 6  # pages read per pipeline job

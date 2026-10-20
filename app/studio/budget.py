@@ -190,7 +190,9 @@ class StudioInputBudget(AbstractCapability):
         def count() -> int:
             return estimate_request_tokens(request_context)
 
-        remaining = max(0, limits.MAX_RUN_INPUT_TOKENS - ctx.usage.input_tokens)
+        # Pipeline jobs have their own input allowance; the chat agent's budget covers its own context.
+        own_input = ctx.usage.input_tokens - int(getattr(getattr(ctx, "deps", None), "pipeline_input_tokens", 0) or 0)
+        remaining = max(0, limits.MAX_RUN_INPUT_TOKENS - own_input)
         target = min(limits.MAX_INPUT_TOKENS, remaining)
         compacted = 0
         # Prefer older results; the latest can also yield to the hard bound.
@@ -211,6 +213,11 @@ class StudioInputBudget(AbstractCapability):
         params = request_context.model_request_parameters
         if job_done:
             # A job tool delivered the turn's artifact: summarize, do not redo work.
+            # Earlier results are no longer needed in full for a short summary.
+            for part, payload in research:
+                part.content = _compact(payload)
+            for part, payload in others:
+                part.content = _compact_any(payload)
             instructions = _instructions(request_context)
             instructions.append(InstructionPart(content=(
                 "The requested job has finished and its result is above. Reply to the owner now with a short summary "

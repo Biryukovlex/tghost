@@ -861,7 +861,7 @@ class StudioService:
                                 request_limit=max(2, int(limits.MAX_TOOL_CALLS) + 2 + int(limits.PIPELINE_MAX_REQUESTS)),
                                 tool_calls_limit=max(1, int(limits.MAX_TOOL_CALLS) + int(limits.DELIVERABLE_TOOL_CALLS)),
                                 output_tokens_limit=max(64, int(limits.MAX_RUN_OUTPUT_TOKENS)),
-                                input_tokens_limit=int(limits.MAX_RUN_INPUT_TOKENS),
+                                input_tokens_limit=int(limits.MAX_RUN_INPUT_TOKENS) + int(limits.PIPELINE_MAX_INPUT_TOKENS),
                                 per_request_input_tokens_limit=int(limits.MAX_INPUT_TOKENS),
                             ),
                             on_complete=capture_completion,
