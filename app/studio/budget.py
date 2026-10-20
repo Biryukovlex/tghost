@@ -133,7 +133,7 @@ def _job_completed(messages: list[Any], tools: list[Any]) -> bool:
     for part in getattr(latest, "parts", []):
         if isinstance(part, ToolReturnPart) and part.tool_name in completing:
             payload = _payload(part.content) or {}
-            if payload.get("status") in {"saved", "edited", "unchanged"}:
+            if payload.get("status") in {"saved", "edited", "unchanged", "found"}:
                 return True
     return False
 
@@ -146,11 +146,15 @@ class StudioInputBudget(AbstractCapability):
         # One agent can serve concurrent runs; lifecycle state is run-local.
         return StudioInputBudget()
 
-    async def before_tool_execute(self, ctx, *, call, tool_def, args):
-        # Finalization keeps only the tools that save the requested artifact.
+    async def wrap_tool_execute(self, ctx, *, call, tool_def, args, handler):
+        # Finalization keeps only the tools that deliver the requested artifact.
+        # A call to any other tool is answered instead of ending the run, so the
+        # finishing turn always produces a reply from the evidence already present.
         if self._finalizing and not is_deliverable(tool_def):
-            raise UsageLimitExceeded("The remaining run budget is reserved for a final response.")
-        return args
+            return {"status": "unavailable",
+                    "message": "The run budget is reserved for your final answer. Do not call more tools; answer the owner "
+                               "now from the evidence above and name what could not be checked."}
+        return await handler(args)
 
     async def after_model_request(self, ctx: RunContext[Any], *, request_context: ModelRequestContext, response):
         callback = getattr(ctx.deps, "on_model_response", None)

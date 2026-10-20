@@ -19,6 +19,7 @@ from .context import ContextAssembler, profile_block_from_mapping
 from .draft_tools import draft_result, register_draft_tools
 from .pipeline import register_pipeline_tools
 from .tool_args import ToolArgumentBoundary
+from .web_results import compact_search, ranked_passages
 from .schemas import ChannelContext
 from .research import ResearchService
 from .repository import StudioRepositoryProtocol, ConversationNotFound
@@ -120,12 +121,13 @@ async def _draft_context(ctx: RunContext[StudioDeps]) -> dict[str, Any] | None:
 def build_agent(settings, *, model=None) -> Agent[StudioDeps, str]:
     """Create the single bounded agent used by the production Studio route."""
 
+    caps = {"search_web": int(limits.CHAT_MAX_SEARCHES), "read_sources": int(limits.CHAT_MAX_READS)}
+
     def budget_tool_visibility(ctx: RunContext[StudioDeps], tool_definition):
         name = str(getattr(tool_definition, "name", ""))
-        # A search call can contain twelve concurrent query variants. Four
-        # rounds preserve broad agent-led research while reserving a model turn
-        # for reading and answering instead of looping until the run fails.
-        if name == "search_web" and ctx.deps.tool_call_counts.get(name, 0) >= 4:
+        # Soft caps: once a research tool has been used its allowed number of
+        # times in this run, it disappears and the model answers from what it has.
+        if name in caps and ctx.deps.tool_call_counts.get(name, 0) >= caps[name]:
             return None
         return tool_definition
 
@@ -292,34 +294,35 @@ def build_agent(settings, *, model=None) -> Agent[StudioDeps, str]:
         engines: list[str] | None = None,
         exclude_domains: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Run an agent-designed multi-query search and return diverse evidence.
+        """Search the web for a research question and return a short ranked list of results.
 
-        For research questions. To write a new post, call write_post instead:
-        it plans and runs its own search. Up to 12 query variants run
-        concurrently (six network slots shared by batches). All candidates are
-        returned without lexical/semantic ranking filters. Make parallel calls
-        for independent language, engine, recency or domain settings. Choose
-        wording and exclusions from user intent.
+        For research questions. To find story ideas for the channel, call find_stories; to write a new
+        post, call write_post: both run their own search. Each result has a source_id, title, url, date
+        and a short snippet; read pages with read_sources before relying on details.
+
+        Args:
+            query: Main search phrase in plain words.
+            alternate_queries: Up to 11 extra phrasings or languages, searched in parallel.
+            recency_days: Only results from the last N days, when the owner's instructions or request set a window.
+            language: Result language code such as en or ru.
+            domains: Only return results from these sites, e.g. ["anthropic.com"].
+            exclude_domains: Sites to leave out.
         """
 
         _check_cancel(ctx)
         # Increment at tool start to enforce cap under concurrency
         current = ctx.deps.tool_call_counts.get("search_web", 0)
-        if current >= 4:
+        if current >= int(limits.CHAT_MAX_SEARCHES):
             return {"status": "blocked", "error": {"code": "search_limit_exceeded", "message": "Search limit reached for this run."}}
         ctx.deps.tool_call_counts["search_web"] = current + 1
-        topics, recent_posts, evidence_ids, channel_evidence = await _research_context(ctx)
         service = _research(ctx, settings)
+        variants = (alternate_queries or [])[:11]
         result = await service.search(
             workspace_id=ctx.deps.workspace_id,
             conversation_id=ctx.deps.conversation_id,
             channel_id=ctx.deps.channel_id,
             query=query,
-            alternate_queries=(alternate_queries or [])[:11],
-            topics=topics,
-            recent_posts=recent_posts,
-            channel_evidence_ids=evidence_ids,
-            channel_evidence=channel_evidence,
+            alternate_queries=variants,
             language=language,
             recency_days=recency_days,
             limit=limit,
@@ -330,23 +333,46 @@ def build_agent(settings, *, model=None) -> Agent[StudioDeps, str]:
         )
         _check_cancel(ctx)
         ctx.deps.completed_tools.add("search_web")
-        return result if isinstance(result, dict) else result.model_dump(mode="json")
+        payload = result if isinstance(result, dict) else result.model_dump(mode="json")
+        return await compact_search(payload, [query, *variants])
 
     @agent.tool(prepare=budget_tool_visibility)
-    async def get_research_sources(ctx: RunContext[StudioDeps], source_ids: list[str] | None = None, offset: int = 0, limit: int = 12, include_content: bool = False) -> dict[str, Any]:
-        """Read stored source details, including omitted search results.
+    async def get_research_sources(ctx: RunContext[StudioDeps], source_ids: list[str] | None = None, offset: int = 0, limit: int = 12,
+                                   include_content: bool = False, focus: str | None = None, passage_offset: int = 0) -> dict[str, Any]:
+        """Browse this chat's saved sources, or reopen already-read pages without fetching again.
 
-        Omit source_ids or pass [] to browse this conversation's source IDs
-        and has_read_content flags, plus total saved/read source counts.
-        include_content returns bounded text of already-read pages without
-        another network fetch. Unknown IDs never cross conversation scope.
+        Omit source_ids or pass [] to browse saved source IDs with has_read_content flags and counts.
+        With source_ids and include_content=true, returns the passages of those read pages most relevant
+        to focus; pass the next_passage_offset from an earlier result as passage_offset to read further.
+        Unknown IDs never cross conversation scope.
+
+        Args:
+            source_ids: Saved source IDs to open; omit to browse.
+            offset: Paging offset when browsing.
+            limit: Sources per page when browsing.
+            include_content: true returns passages of already-read pages.
+            focus: What you are looking for on the pages; defaults to the owner's latest message.
+            passage_offset: Continue from this passage position (next_passage_offset).
         """
         _check_cancel(ctx)
         result = await _research(ctx, settings).source_page(
             workspace_id=ctx.deps.workspace_id, conversation_id=ctx.deps.conversation_id,
             channel_id=ctx.deps.channel_id, source_ids=source_ids or [], offset=offset,
-            limit=limit, include_content=include_content,
+            limit=limit, include_content=False,
         )
+        if include_content:
+            wanted = focus or (ctx.deps.owner_messages[-1] if ctx.deps.owner_messages else "")
+            opened = 0
+            for source in result.get("sources") or []:
+                if opened >= int(limits.READ_PAGES_PER_CALL):
+                    break
+                stored = await _research(ctx, settings).get_source(
+                    workspace_id=ctx.deps.workspace_id, conversation_id=ctx.deps.conversation_id,
+                    channel_id=ctx.deps.channel_id, source_id=str(source.get("source_id")))
+                if stored is not None and stored.content:
+                    source.update(await ranked_passages(stored.content, wanted or stored.title, offset=passage_offset))
+                    source.pop("excerpt", None)
+                    opened += 1
         # Unknown IDs alone are not evidence that the archive was checked.
         # The result points the model to the source_ids=[] catalog call.
         if result.get("sources") or not source_ids:
@@ -354,29 +380,44 @@ def build_agent(settings, *, model=None) -> Agent[StudioDeps, str]:
         return result
 
     @agent.tool(prepare=budget_tool_visibility)
-    async def read_sources(ctx: RunContext[StudioDeps], urls: list[str]) -> dict[str, Any]:
-        """Read selected URLs through the SSRF-safe bounded source reader.
+    async def read_sources(ctx: RunContext[StudioDeps], urls: list[str], focus: str | None = None) -> dict[str, Any]:
+        """Read up to 3 pages and return the passages most relevant to what you are looking for.
 
-        For research questions. To write a post about a link, call write_post
-        with the link instead: it reads the page itself.
+        For research questions. To write a post about a link, call write_post with the link instead:
+        it reads the page itself. Each page returns its best passages (about 3,000 characters); use
+        get_research_sources(source_ids, include_content=true, focus, passage_offset) to read further.
+
+        Args:
+            urls: Full http(s) URLs from search results or the owner.
+            focus: What you are looking for on these pages, in a few words; defaults to the owner's latest message.
         """
 
         _check_cancel(ctx)
-        topics, recent_posts, evidence_ids, channel_evidence = await _research_context(ctx)
+        ctx.deps.tool_call_counts["read_sources"] = ctx.deps.tool_call_counts.get("read_sources", 0) + 1
         service = _research(ctx, settings)
         result = await service.read_sources(
             workspace_id=ctx.deps.workspace_id,
             conversation_id=ctx.deps.conversation_id,
             channel_id=ctx.deps.channel_id,
-            urls=urls[:6],
-            topics=topics,
-            recent_posts=recent_posts,
-            channel_evidence_ids=evidence_ids,
-            channel_evidence=channel_evidence,
+            urls=urls[: int(limits.READ_PAGES_PER_CALL)],
         )
         _check_cancel(ctx)
         ctx.deps.completed_tools.add("read_sources")
-        return result
+        wanted = focus or (ctx.deps.owner_messages[-1] if ctx.deps.owner_messages else "")
+        pages = []
+        for document in result.get("documents") or []:
+            page: dict[str, Any] = {key: document.get(key) for key in ("source_id", "url", "title", "status", "published_at")}
+            if document.get("status") == "ok":
+                stored = await service.get_source(
+                    workspace_id=ctx.deps.workspace_id, conversation_id=ctx.deps.conversation_id,
+                    channel_id=ctx.deps.channel_id, source_id=str(document.get("source_id")))
+                text = (stored.content if stored is not None and stored.content else "") or str(document.get("text") or "")
+                page.update(await ranked_passages(text, wanted or str(document.get("title") or "")))
+            else:
+                page["warnings"] = list(document.get("warnings") or [])[:2]
+            pages.append(page)
+        return {"pages": pages, "focus": wanted[:200], "warnings": list(result.get("warnings") or [])[:3],
+                "next": "Read further passages with get_research_sources(source_ids, include_content=true, focus, passage_offset)."}
 
     @agent.tool(prepare=budget_tool_visibility)
     async def compare_sources(
@@ -402,33 +443,6 @@ def build_agent(settings, *, model=None) -> Agent[StudioDeps, str]:
         )
         _check_cancel(ctx)
         ctx.deps.completed_tools.add("compare_sources")
-        return result
-
-    @agent.tool(prepare=budget_tool_visibility)
-    async def find_novel_topics(
-        ctx: RunContext[StudioDeps],
-        instruction: str = "",
-        categories: list[str] | None = None,
-        domains: list[str] | None = None,
-    ) -> dict[str, Any]:
-        """Find adjacent/current topics and explain their channel fit."""
-
-        _check_cancel(ctx)
-        topics, recent_posts, evidence_ids, channel_evidence = await _research_context(ctx)
-        service = _research(ctx, settings)
-        result = await service.find_novel_topics(
-            workspace_id=ctx.deps.workspace_id,
-            conversation_id=ctx.deps.conversation_id,
-            channel_id=ctx.deps.channel_id,
-            topics=topics,
-            instruction=instruction,
-            recent_posts=recent_posts,
-            channel_evidence_ids=evidence_ids,
-            channel_evidence=channel_evidence,
-            categories=categories or (),
-            domains=domains or (),
-        )
-        _check_cancel(ctx)
         return result
 
     async def propose_topic_changes(ctx: RunContext[StudioDeps], instruction: str) -> dict[str, Any]:

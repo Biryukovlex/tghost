@@ -493,6 +493,36 @@ async def revise_draft_job(job: _Job, *, instruction: str) -> dict[str, Any]:
                      "Do not read the draft again unless asked.")}
 
 
+async def find_stories_job(job: _Job, *, topic: str | None) -> dict[str, Any]:
+    """The research half of write_post: candidate stories with sources, no draft."""
+    if job.deps.research is None:
+        from .research import ResearchService
+        job.deps.research = ResearchService(job.settings, repository=job.deps.repository)
+    request = (getattr(job.deps, "owner_messages", ()) or ("",))[-1] or (topic or "")
+    material = await _channel_material(job)
+    documents, outcome = await _find_pages(job, material, request, drop_covered=True, use_window=True, focus=topic or "")
+    if not documents:
+        if outcome == "unavailable":
+            raise PipelineError("search_unavailable", "Web search is unavailable right now; no stories could be found.")
+        raise PipelineError("no_story_found", "No suitable new story was found in the search results.")
+    stories = await _extract(job, material, request, documents)
+    threshold = material["covered_threshold"]
+    scored = sorted(((material["corpus"].max_similarity(f"{story.headline} {story.summary}"), story) for story in stories),
+                    key=lambda item: (item[0] > threshold, item[0]))
+    candidates = []
+    for similarity, story in scored[: int(limits.FIND_STORIES_MAX)]:
+        cited = [d for d in documents if any(_same_url(d["url"], url) for url in story.source_urls)]
+        candidates.append({"headline": story.headline, "summary": story.summary, "why_it_fits": story.why_it_fits,
+                           "published": story.published or next((str(d.get("published_at"))[:10] for d in cited if d.get("published_at")), None),
+                           "sources": [d["url"] for d in cited] or story.source_urls[:3],
+                           "resembles_earlier_post": similarity > threshold})
+    if candidates and all(item["resembles_earlier_post"] for item in candidates):
+        job.warnings.append("Every story found resembles an earlier post or draft of this channel. Offer to search again with a different focus.")
+    return {"status": "found", "stories": candidates, "warnings": job.warnings, "steps": job.steps,
+            "note": ("Show the owner these stories briefly, with their dates and sources, and ask which one to write. "
+                     "To write one, call write_post with research=none and links set to that story's sources.")}
+
+
 def _describe(exc: Exception) -> str:
     status = getattr(exc, "status_code", None)
     return f"HTTP {status}" if status else f"{type(exc).__name__}: {str(exc)[:160]}"
@@ -516,6 +546,24 @@ JOB = {"completes_turn": True, "deliverable": True}
 
 
 def register_pipeline_tools(agent, settings) -> None:
+    @agent.tool(timeout=float(limits.PIPELINE_TIMEOUT_SECONDS), sequential=True, metadata=JOB)
+    async def find_stories(ctx: RunContext[Any], topic: str | None = None) -> dict[str, Any]:
+        """Find new story ideas for this channel: searches, reads pages and returns up to 5 candidates with sources.
+
+        Use it when the owner wants news, story ideas or a hook found without asking for a finished post.
+        It skips stories the channel has already covered and follows the owner's time window, if any.
+
+        Args:
+            topic: Optional subject to focus the search on, in the owner's words.
+        """
+        job = _Job(ctx, settings)
+        try:
+            return await find_stories_job(job, topic=topic)
+        except PipelineError as exc:
+            return {"status": "failed", "error": {"code": exc.code, "message": str(exc)}, "steps": job.steps}
+        except (ModelAPIError, UnexpectedModelBehavior, UsageLimitExceeded) as exc:
+            return _model_failure(job, exc)
+
     async def has_draft(ctx: RunContext[Any], definition):
         row = await ctx.deps.repository.get_current_draft(conversation_id=ctx.deps.conversation_id, channel_id=ctx.deps.channel_id)
         return definition if row is not None else None

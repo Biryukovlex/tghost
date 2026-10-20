@@ -30,6 +30,11 @@ RUN pip install --no-cache-dir -r requirements.lock
 # Cache the local tokenizer at build time; model requests never download it.
 RUN python -c 'import tiktoken; tiktoken.get_encoding("o200k_base")' \
     && chmod -R a+rX /opt/tiktoken
+# Fetch the pinned local embedding model (revision and sha256 checked); the
+# running app never downloads it and no text leaves the machine.
+COPY scripts/fetch_embedding_model.py /tmp/fetch_embedding_model.py
+RUN python /tmp/fetch_embedding_model.py /opt/models/paraphrase-multilingual-MiniLM-L12-v2 \
+    && chmod -R a+rX /opt/models && rm /tmp/fetch_embedding_model.py
 
 COPY app ./app
 COPY scripts ./scripts
