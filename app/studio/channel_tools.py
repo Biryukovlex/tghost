@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 import statistics
+from datetime import date, datetime
 from typing import Any, Literal
 
 from pydantic_ai import RunContext
@@ -89,7 +90,8 @@ def index_row(row: dict[str, Any], identifier: str | None) -> dict[str, Any]:
     first = next((line.strip() for line in str(row.get("text") or "").split("\n") if line.strip()), "")[:120]
     posted = row.get("posted_at")
     return {"post_id": row["post_id"], "link": telegram_link(identifier, row.get("message_id")),
-            "posted_at": posted.date().isoformat() if hasattr(posted, "date") else (str(posted)[:10] if posted else None),
+            "posted_at": posted.date().isoformat() if isinstance(posted, datetime) else (
+                posted.isoformat() if isinstance(posted, date) else (str(posted)[:10] if posted else None)),
             "first_line": first, "views": row.get("views"), "reactions": row.get("reactions"),
             "comments": row.get("comments"), "shares": row.get("shares")}
 

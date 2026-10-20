@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from pydantic_ai.settings import ModelSettings
+
 from .. import limits
 
 
@@ -19,15 +21,15 @@ def _endpoint(model: Any) -> str:
     return str(getattr(model, "base_url", "") or "")
 
 
-def light_settings(model: Any) -> dict[str, Any]:
+def light_settings(model: Any) -> ModelSettings:
     """Model settings for a short decision step."""
-    settings: dict[str, Any] = {"max_tokens": int(limits.PIPELINE_STEP_MAX_OUTPUT_TOKENS), "timeout": max(1.0, float(limits.PIPELINE_STEP_TIMEOUT_SECONDS))}
+    settings = ModelSettings(max_tokens=int(limits.PIPELINE_STEP_MAX_OUTPUT_TOKENS), timeout=max(1.0, float(limits.PIPELINE_STEP_TIMEOUT_SECONDS)))
     if _endpoint(model).rstrip("/") == limits.OPENROUTER_BASE_URL.rstrip("/"):
         # OpenRouter's unified reasoning option; models without reasoning ignore it.
         settings["extra_body"] = {"reasoning": {"effort": "low"}}
     return settings
 
 
-def full_settings(model: Any) -> dict[str, Any]:
+def full_settings(model: Any) -> ModelSettings:
     """Model settings for steps that need real reasoning (story extraction, writing)."""
-    return {"max_tokens": int(limits.PIPELINE_STEP_MAX_OUTPUT_TOKENS), "timeout": max(1.0, float(limits.PIPELINE_STEP_TIMEOUT_SECONDS))}
+    return ModelSettings(max_tokens=int(limits.PIPELINE_STEP_MAX_OUTPUT_TOKENS), timeout=max(1.0, float(limits.PIPELINE_STEP_TIMEOUT_SECONDS)))

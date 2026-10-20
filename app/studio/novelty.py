@@ -45,8 +45,8 @@ class ArchiveCorpus:
         self.idf = {gram: math.log((1 + total) / (1 + seen)) + 1 for gram, seen in document_frequency.items()}
         self.vectors = [self._weight(vector) for vector in counts]
         self.postings: dict[str, list[tuple[int, float]]] = defaultdict(list)
-        for index, vector in enumerate(self.vectors):
-            for gram, weight in vector.items():
+        for index, weighted in enumerate(self.vectors):
+            for gram, weight in weighted.items():
                 self.postings[gram].append((index, weight))
 
     def _weight(self, vector: Counter) -> dict[str, float]:

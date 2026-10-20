@@ -124,7 +124,8 @@ class _Job:
     def __init__(self, ctx: RunContext[Any], settings) -> None:
         self.ctx = ctx
         self.settings = settings
-        self.model = ctx.model
+        # The run's own model, typed loosely: sub-agents accept any model object.
+        self.model: Any = ctx.model
         self.deps = ctx.deps
         self.steps: dict[str, dict[str, Any]] = {}
         self.warnings: list[str] = []
@@ -167,6 +168,7 @@ class _Job:
         self.steps[step] = {"requests": self.ctx.usage.requests - before[0], "input_tokens": self.ctx.usage.input_tokens - before[1],
                             "output_tokens": self.ctx.usage.output_tokens - before[2],
                             "seconds": round(asyncio.get_running_loop().time() - started, 1)}
+        assert result is not None  # the retry loop either assigns a result or raises
         return result.output
 
 

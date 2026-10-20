@@ -43,7 +43,7 @@ def saved_draft_result(row: dict[str, Any], *, previous_body: str | None) -> dic
     """
     result = draft_result(row)
     body = result.pop("body", "") or ""
-    measured = {"body_chars": len(body)}
+    measured: dict[str, Any] = {"body_chars": len(body)}
     if previous_body is not None:
         measured["previous_body_chars"] = len(previous_body)
         measured["length_ratio"] = round(len(body) / len(previous_body), 2) if previous_body else None
