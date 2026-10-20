@@ -435,8 +435,11 @@ async def write_post_job(job: _Job, *, research: str, links: list[str], notes: s
         story, similarity, covered = _choose(material, stories, owner_material=owner_material)
         if covered and owner_material:
             job.warnings.append("The channel has covered a similar story; the post was written as requested.")
+        elif covered:
+            job.warnings.append("Every story found resembles an earlier post or draft of this channel; the least similar one was "
+                                "used. Tell the owner and offer to search again with a different focus.")
         job.steps["chosen"] = {"headline": story.headline[:120], "published": story.published,
-                               "archive_similarity": round(similarity, 3), "covered_threshold": round(material["covered_threshold"], 3)}
+                               "resembles_earlier_post": covered}
     elif owner_notes and entry != "none":
         job.warnings.append("Research found nothing usable; the post was written from the owner's notes.")
     post = await _write_and_check(job, material, request, story, documents, owner_notes if (entry in {"none", "supporting"} or not documents) else None)
