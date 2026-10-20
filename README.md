@@ -13,10 +13,12 @@ self-hosted workspace.
 
 - **Overview:** track views, reactions, comments and shares; explore stored
   posts, read their discussion comments and export CSVs.
-- **Studio:** research ideas, write and edit drafts, attach images and keep
-  conversation and draft history. Channel profiles use the top 30 posts,
-  ranked by code before they reach the model. Add other owned channels through
-  **References**.
+- **Studio:** find a story your channel has not covered, or turn a link or
+  your own notes into a draft styled like your best posts; edit drafts, attach
+  images and keep conversation and draft history. New posts run as fixed
+  steps (search, reading, story choice, writing, checks), so smaller models
+  finish them reliably. Channel profiles use the top 30 posts, ranked by code
+  before they reach the model. Add other owned channels through **References**.
 - **Calendar:** schedule text, photos or albums in Telegram; review, reschedule
   and cancel posts in month, week or list views. Publishing always requires
   your confirmation and the connected account's posting permission. Once

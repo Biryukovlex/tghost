@@ -27,7 +27,8 @@ from datetime import datetime, timezone
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, BeforeValidator, Field
-from pydantic_ai import Agent, ModelRetry, RunContext, UsageLimits
+from pydantic_ai import Agent, ModelRetry, RunContext, UnexpectedModelBehavior, UsageLimitExceeded, UsageLimits
+from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError
 
 from .. import limits
 from .channel_tools import markdown_features, post_markdown, ranked_posts, style_brief
@@ -84,6 +85,23 @@ class PipelineError(Exception):
         self.code = code
 
 
+def _retry_after(exc: Exception, attempt: int) -> float:
+    """Seconds to wait before retrying a rate-limited step: the provider's hint, else exponential backoff."""
+    body = getattr(exc, "body", None)
+    hint = None
+    if isinstance(body, dict):
+        metadata = body.get("metadata") or (body.get("error") or {}).get("metadata") or {}
+        headers = metadata.get("headers") if isinstance(metadata, dict) else None
+        if isinstance(headers, dict):
+            hint = headers.get("Retry-After") or headers.get("retry-after")
+    try:
+        seconds = float(hint) if hint is not None else None
+    except (TypeError, ValueError):
+        seconds = None
+    base = float(limits.PIPELINE_RATE_LIMIT_BACKOFF_SECONDS) * (2 ** attempt)
+    return max(1.0, min(seconds if seconds is not None else base, 60.0))
+
+
 def _check_cancel(ctx: RunContext[Any]) -> None:
     if ctx.deps.cancel_event.is_set():
         raise asyncio.CancelledError
@@ -111,6 +129,7 @@ class _Job:
         self.steps: dict[str, dict[str, Any]] = {}
         self.warnings: list[str] = []
         self.started_requests = ctx.usage.requests
+        self.current_step = "prepare"
 
     def _limits(self) -> UsageLimits:
         allowed = self.started_requests + int(limits.PIPELINE_MAX_REQUESTS)
@@ -119,6 +138,7 @@ class _Job:
     async def ask(self, step: str, output_type, instructions: str, prompt: str, *, light: bool,
                   validator=None, tools=None, tool_calls: int = 0):
         _check_cancel(self.ctx)
+        self.current_step = step
         agent = Agent(self.model, output_type=output_type, deps_type=type(self.deps), retries=2,
                       instructions=instructions, capabilities=[ToolArgumentBoundary()],
                       model_settings=light_settings(self.model) if light else full_settings(self.model))
@@ -131,7 +151,17 @@ class _Job:
         usage_limits = self._limits()
         if tool_calls:
             usage_limits = UsageLimits(request_limit=usage_limits.request_limit, tool_calls_limit=self.ctx.usage.tool_calls + tool_calls)
-        result = await agent.run(prompt, deps=self.deps, usage=self.ctx.usage, usage_limits=usage_limits)
+        result = None
+        for attempt in range(int(limits.PIPELINE_RATE_LIMIT_RETRIES) + 1):
+            try:
+                result = await agent.run(prompt, deps=self.deps, usage=self.ctx.usage, usage_limits=usage_limits)
+                break
+            except ModelHTTPError as exc:
+                # 429 means "retry later": wait as the provider asks, a bounded number of times.
+                if exc.status_code != 429 or attempt >= int(limits.PIPELINE_RATE_LIMIT_RETRIES):
+                    raise
+                await asyncio.sleep(_retry_after(exc, attempt))
+                _check_cancel(self.ctx)
         self.steps[step] = {"requests": self.ctx.usage.requests - before[0], "input_tokens": self.ctx.usage.input_tokens - before[1],
                             "output_tokens": self.ctx.usage.output_tokens - before[2],
                             "seconds": round(asyncio.get_running_loop().time() - started, 1)}
@@ -332,7 +362,8 @@ async def _save(job: _Job, post: PostText, links: list[str]) -> dict[str, Any]:
                                             expected_revision=current.get("revision"), origin="regenerated", new_version=True)
         deps.completed_tools.add("edit_draft")
     return {"version": int(row.get("current_version", row.get("version", 1))), "revision": row.get("revision"),
-            "title": content.title, "body_chars": len(content.body), "source_links": content.source_links}
+            "title": content.title, "body_chars": len(content.body), "source_links": content.source_links,
+            "opening": content.body[:400]}
 
 
 def _owner_links(job: _Job, links: list[str], stored: list[str]) -> tuple[list[str], list[str]]:
@@ -351,9 +382,9 @@ def _owner_links(job: _Job, links: list[str], stored: list[str]) -> tuple[list[s
     return accepted, rejected
 
 
-async def write_post_job(ctx: RunContext[Any], settings, *, research: str, links: list[str], notes: str | None,
+async def write_post_job(job: _Job, *, research: str, links: list[str], notes: str | None,
                          topic: str | None) -> dict[str, Any]:
-    job = _Job(ctx, settings)
+    settings = job.settings
     if job.deps.research is None:
         from .research import ResearchService
         job.deps.research = ResearchService(settings, repository=job.deps.repository)
@@ -405,11 +436,11 @@ async def write_post_job(ctx: RunContext[Any], settings, *, research: str, links
         job.warnings.append("Checks still flag: " + " ".join(remaining)[:400])
     return {"status": "saved", "entry": entry, "draft": draft,
             "story": job.steps.get("chosen"), "warnings": job.warnings, "steps": job.steps,
-            "note": "The draft is saved. Summarize it for the owner in a few lines; get_draft returns the full text."}
+            "note": ("The draft is saved and shown to the owner in the draft panel. Tell the owner in a few lines what it covers, "
+                     "using the opening and story above, and report any warnings. Do not read the draft again unless asked.")}
 
 
-async def revise_draft_job(ctx: RunContext[Any], settings, *, instruction: str) -> dict[str, Any]:
-    job = _Job(ctx, settings)
+async def revise_draft_job(job: _Job, *, instruction: str) -> dict[str, Any]:
     repository, deps = job.deps.repository, job.deps
     current = await repository.get_current_draft(conversation_id=deps.conversation_id, channel_id=deps.channel_id)
     if current is None:
@@ -431,7 +462,23 @@ async def revise_draft_job(ctx: RunContext[Any], settings, *, instruction: str) 
                       "body_chars": len(body), "previous_body_chars": len(before),
                       "length_ratio": round(len(body) / len(before), 2) if before else None},
             "steps": job.steps,
-            "note": "Tell the owner what changed in a few lines; get_draft returns the full text."}
+            "note": ("The new version is shown to the owner in the draft panel. Tell the owner in a few lines what changed. "
+                     "Do not read the draft again unless asked.")}
+
+
+def _model_failure(job: _Job, exc: Exception) -> dict[str, Any]:
+    """A model failure inside a step ends the job, not the run; the chat agent explains it."""
+    status = getattr(exc, "status_code", None)
+    code = "model_rate_limited" if status == 429 else "model_step_failed"
+    detail = f"HTTP {status}" if status else type(exc).__name__
+    return {"status": "failed", "error": {"code": code, "step": job.current_step,
+                                          "message": f"The model failed during the '{job.current_step}' step ({detail}). Saved research is kept; ask the owner to retry later."},
+            "steps": job.steps}
+
+
+# Job tools deliver the turn's artifact: once one succeeds, the budget gives the
+# next model turn no tools, so the chat agent summarizes instead of redoing work.
+JOB = {"completes_turn": True}
 
 
 def register_pipeline_tools(agent, settings) -> None:
@@ -439,7 +486,7 @@ def register_pipeline_tools(agent, settings) -> None:
         row = await ctx.deps.repository.get_current_draft(conversation_id=ctx.deps.conversation_id, channel_id=ctx.deps.channel_id)
         return definition if row is not None else None
 
-    @agent.tool(timeout=float(limits.PIPELINE_TIMEOUT_SECONDS), sequential=True)
+    @agent.tool(timeout=float(limits.PIPELINE_TIMEOUT_SECONDS), sequential=True, metadata=JOB)
     async def write_post(ctx: RunContext[Any], research: Literal["discover", "supporting", "none"] = "discover",
                          links: list[str] | None = None, notes: str | None = None, topic: str | None = None) -> dict[str, Any]:
         """Write and save a new post draft for this channel: research, style and checks run as fixed steps.
@@ -455,14 +502,17 @@ def register_pipeline_tools(agent, settings) -> None:
             notes: The owner's own idea, notes or opinion for the post, copied faithfully.
             topic: Optional subject that should steer a discovery search.
         """
+        job = _Job(ctx, settings)
         try:
-            return await write_post_job(ctx, settings, research=research, links=list(links or []), notes=notes, topic=topic)
+            return await write_post_job(job, research=research, links=list(links or []), notes=notes, topic=topic)
         except PipelineError as exc:
-            return {"status": "failed", "error": {"code": exc.code, "message": str(exc)}}
+            return {"status": "failed", "error": {"code": exc.code, "message": str(exc)}, "steps": job.steps}
         except (DraftValidationError, DraftConflictError) as exc:
             return {"status": "failed", "error": {"code": getattr(exc, "code", "draft_error"), "message": str(exc)}}
+        except (ModelAPIError, UnexpectedModelBehavior, UsageLimitExceeded) as exc:
+            return _model_failure(job, exc)
 
-    @agent.tool(timeout=float(limits.PIPELINE_TIMEOUT_SECONDS), sequential=True, prepare=has_draft)
+    @agent.tool(timeout=float(limits.PIPELINE_TIMEOUT_SECONDS), sequential=True, prepare=has_draft, metadata=JOB)
     async def revise_draft(ctx: RunContext[Any], instruction: str) -> dict[str, Any]:
         """Rewrite this chat's draft on the owner's request (shorten, restructure, change tone, add or cut parts).
 
@@ -471,4 +521,8 @@ def register_pipeline_tools(agent, settings) -> None:
         Args:
             instruction: The owner's requested change, copied faithfully.
         """
-        return await revise_draft_job(ctx, settings, instruction=instruction)
+        job = _Job(ctx, settings)
+        try:
+            return await revise_draft_job(job, instruction=instruction)
+        except (ModelAPIError, UnexpectedModelBehavior, UsageLimitExceeded) as exc:
+            return _model_failure(job, exc)

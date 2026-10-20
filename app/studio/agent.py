@@ -291,10 +291,12 @@ def build_agent(settings, *, model=None) -> Agent[StudioDeps, str]:
     ) -> dict[str, Any]:
         """Run an agent-designed multi-query search and return diverse evidence.
 
-        Up to 12 query variants run concurrently (six network slots shared by
-        batches). All candidates are returned without lexical/semantic ranking
-        filters. Make parallel calls for independent language, engine, recency
-        or domain settings. Choose wording and exclusions from user intent.
+        For research questions. To write a new post, call write_post instead:
+        it plans and runs its own search. Up to 12 query variants run
+        concurrently (six network slots shared by batches). All candidates are
+        returned without lexical/semantic ranking filters. Make parallel calls
+        for independent language, engine, recency or domain settings. Choose
+        wording and exclusions from user intent.
         """
 
         _check_cancel(ctx)
@@ -350,7 +352,11 @@ def build_agent(settings, *, model=None) -> Agent[StudioDeps, str]:
 
     @agent.tool(prepare=budget_tool_visibility)
     async def read_sources(ctx: RunContext[StudioDeps], urls: list[str]) -> dict[str, Any]:
-        """Read selected URLs through the SSRF-safe bounded source reader."""
+        """Read selected URLs through the SSRF-safe bounded source reader.
+
+        For research questions. To write a post about a link, call write_post
+        with the link instead: it reads the page itself.
+        """
 
         _check_cancel(ctx)
         topics, recent_posts, evidence_ids, channel_evidence = await _research_context(ctx)

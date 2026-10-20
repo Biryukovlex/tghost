@@ -124,6 +124,20 @@ def estimate_request_tokens(request: ModelRequestContext) -> int:
     return overhead + estimate_tokens(content) + 1024
 
 
+def _job_completed(messages: list[Any], tools: list[Any]) -> bool:
+    """True when the latest tool results include a successful turn-completing job."""
+    completing = {tool.name for tool in tools if (getattr(tool, "metadata", None) or {}).get("completes_turn")}
+    if not completing or not messages:
+        return False
+    latest = messages[-1]
+    for part in getattr(latest, "parts", []):
+        if isinstance(part, ToolReturnPart) and part.tool_name in completing:
+            payload = _payload(part.content) or {}
+            if payload.get("status") in {"saved", "edited", "unchanged"}:
+                return True
+    return False
+
+
 class StudioInputBudget(AbstractCapability):
     def __init__(self):
         self._finalizing = False
@@ -190,6 +204,25 @@ class StudioInputBudget(AbstractCapability):
             part.content = _compact_any(payload)
             compacted += 1
         estimated = count()
+        params = request_context.model_request_parameters
+        if _job_completed(messages, params.function_tools):
+            # A job tool delivered the turn's artifact: summarize, do not redo work.
+            instructions = _instructions(request_context)
+            instructions.append(InstructionPart(content=(
+                "The requested job has finished and its result is above. Reply to the owner now with a short summary "
+                "of that result and any warnings. Tools are unavailable for this turn.")))
+            request_context.model_request_parameters = replace(params, function_tools=[], instruction_parts=instructions)
+            request_context.model_settings = {**(request_context.model_settings or {}), "tool_choice": "none"}
+            self._finalizing = True
+            estimated = count()
+            callback = getattr(getattr(ctx, "deps", None), "on_input_budget", None)
+            if callback is not None:
+                await callback({"estimated_input_tokens": estimated, "remaining_input_tokens": remaining,
+                                "input_limit_tokens": target, "compacted_results": compacted,
+                                "finalizing": True, "status": "rejected" if estimated > target else "ready"})
+            if estimated > target:
+                raise UsageLimitExceeded("Studio input budget reached; narrow the request or start a new conversation.")
+            return request_context
         # Fund this request and another similarly sized turn before permitting
         # more tool work. Otherwise use the funded turn for final synthesis.
         finalizing = remaining < 2 * estimated or ctx.usage.tool_calls >= limits.MAX_TOOL_CALLS

@@ -40,6 +40,8 @@ PIPELINE_MAX_LISTED = 30  # search results shown to the page picker
 PIPELINE_MAX_PAGES = 6  # pages read per pipeline job
 PIPELINE_PAGE_CHARS = 3_500  # page text characters given to story extraction
 COPY_SHINGLE_WORDS = 8  # consecutive words that count as copied text
+PIPELINE_RATE_LIMIT_RETRIES = 2  # retries of one pipeline step after HTTP 429
+PIPELINE_RATE_LIMIT_BACKOFF_SECONDS = 20.0  # first wait when the provider gives no Retry-After hint
 
 # Research and source reader bounds
 SEARCH_PROVIDER = "searxng"  # only supported provider

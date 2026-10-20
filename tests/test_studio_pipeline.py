@@ -42,7 +42,7 @@ class StubResearch:
 
 
 def scripted(main_call: dict[str, Any], *, writer_body: str = "**A new headline**\n\nFresh text about the payments framework.",
-             story_url: str = OLD_LINK, picks=None, revise=None):
+             story_url: str = OLD_LINK, picks=None, revise=None, fail_writer: bool = False):
     seen: list[str] = []
 
     def respond(messages, info):
@@ -57,6 +57,7 @@ def scripted(main_call: dict[str, Any], *, writer_body: str = "**A new headline*
             if not returned:
                 seen.append("main")
                 return ModelResponse(parts=[ToolCallPart(main_call["tool"], main_call["args"])])
+            seen.append("summary-tools:" + ",".join(sorted(tool.name for tool in info.function_tools)))
             return ModelResponse(parts=[TextPart("Saved.")])
         if instructions.startswith("You plan web searches"):
             seen.append("plan")
@@ -69,6 +70,10 @@ def scripted(main_call: dict[str, Any], *, writer_body: str = "**A new headline*
             return final({"stories": [{"headline": "A new story", "summary": "Facts and numbers.", "source_urls": [story_url],
                                        "published": "2026-10-13"}]})
         if instructions.startswith("You are the channel's writer"):
+            if fail_writer:
+                from pydantic_ai.exceptions import ModelHTTPError
+                seen.append("write-429")
+                raise ModelHTTPError(429, "test-model", {"message": "rate limited"})
             seen.append("fix" if "Fix only" in instructions else "write")
             return final({"title": "Post", "body": writer_body})
         if instructions.startswith("You revise the chat's existing draft"):
@@ -145,8 +150,8 @@ async def test_search_outage_is_reported_as_a_typed_failure():
     research = StubResearch(outcome="unavailable")
     returned, draft, *_ = await run({"tool": "write_post", "args": {"research": "discover"}}, research=research,
                                     owner_message="Find a new story and write a post.")
-    assert returned == {"status": "failed", "error": {"code": "search_unavailable",
-                                                      "message": "Web search is unavailable right now; no story could be found."}}
+    assert returned["status"] == "failed"
+    assert returned["error"] == {"code": "search_unavailable", "message": "Web search is unavailable right now; no story could be found."}
     assert draft is None
 
 
@@ -179,3 +184,27 @@ async def test_revise_draft_uses_an_editor_that_sees_lengths():
     assert returned["draft"]["length_ratio"] == round(len(shorter) / len(body), 2)
     current = await repository.get_current_draft(conversation_id=chat["id"], channel_id=1)
     assert current["body"] == shorter and current["current_version"] == 2
+
+
+@pytest.mark.asyncio
+async def test_a_finished_job_completes_the_turn_without_more_tools():
+    research = StubResearch(documents={OLD_LINK: "Payments framework details. " * 30})
+    returned, draft, seen, *_ = await run({"tool": "write_post", "args": {"research": "none", "links": [OLD_LINK]}},
+                                          research=research, owner_message=f"Write about {OLD_LINK}")
+    assert returned["status"] == "saved"
+    assert seen[-1] == "summary-tools:"  # the summarizing turn had no tools
+
+
+@pytest.mark.asyncio
+async def test_a_rate_limited_step_fails_the_job_not_the_run(monkeypatch):
+    from app import limits
+    monkeypatch.setattr(limits, "PIPELINE_RATE_LIMIT_RETRIES", 1)
+    monkeypatch.setattr(limits, "PIPELINE_RATE_LIMIT_BACKOFF_SECONDS", 0.0)
+    research = StubResearch(documents={OLD_LINK: "Payments framework details. " * 30})
+    returned, draft, seen, *_ = await run({"tool": "write_post", "args": {"research": "none", "links": [OLD_LINK]}},
+                                          research=research, owner_message=f"Write about {OLD_LINK}", fail_writer=True)
+    assert seen.count("write-429") == 2  # one retry, then the job reports the failure
+    assert returned["status"] == "failed"
+    assert returned["error"]["code"] == "model_rate_limited" and returned["error"]["step"] == "write"
+    assert draft is None
+    assert seen[-1].startswith("summary-tools:") and seen[-1] != "summary-tools:"  # a failed job leaves tools available
