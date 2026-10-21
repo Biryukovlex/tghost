@@ -8,7 +8,7 @@ def test_studio_frontend_is_pinned_and_build_artifacts_exist():
     package = (ROOT / "studio-frontend" / "package.json").read_text(encoding="utf-8")
     assert '"@assistant-ui/react-ag-ui": "0.0.57"' in package
     assert '"@ag-ui/client": "0.0.58"' in package
-    assert '"vite": "7.3.6"' in package
+    assert '"vite": "7.3.7"' in package
     assert (ROOT / "app/web/static/studio-dist/assets/studio.js").exists()
     assert (ROOT / "app/web/static/studio-dist/assets/index.css").exists()
 
