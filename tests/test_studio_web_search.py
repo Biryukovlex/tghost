@@ -293,3 +293,32 @@ async def test_reads_issued_together_still_respect_the_read_cap(fake_embedder):
     results = await asyncio.gather(*(tools["read_sources"].function(ctx, urls=[f"https://x.test/{n}"]) for n in range(3)))
     assert [r.get("status") == "read_limit_reached" for r in results].count(True) == 3 - limits.CHAT_MAX_READS
     assert len(research.reads) == limits.CHAT_MAX_READS
+
+
+@pytest.mark.asyncio
+async def test_an_oversized_newest_result_is_shortened_but_the_archive_keeps_it():
+    from copy import deepcopy
+
+    from pydantic_ai.messages import ModelRequest, UserPromptPart
+    from pydantic_ai.models import ModelRequestContext, ModelRequestParameters
+    from pydantic_ai.models.test import TestModel
+    from pydantic_ai.usage import RunUsage
+
+    from app.studio.budget import StudioInputBudget
+
+    huge = {"channel_evidence": {"claim": "Top posts"}, "web_evidence": [{"story": "x" * 12_000, "n": n} for n in range(10)]}
+    small = {"posts": [{"post_id": 1, "text": "Short post"}]}
+    original = deepcopy(huge)
+    messages = [ModelRequest(parts=[UserPromptPart("Why this story?")]),
+                ModelResponse(parts=[ToolCallPart("explain_recommendation", {}, tool_call_id="e"),
+                                     ToolCallPart("read_channel_posts", {}, tool_call_id="r")]),
+                ModelRequest(parts=[ToolReturnPart("explain_recommendation", huge, tool_call_id="e"),
+                                    ToolReturnPart("read_channel_posts", small, tool_call_id="r")])]
+    request = ModelRequestContext(model=TestModel(), messages=messages, model_settings=None,
+                                  model_request_parameters=ModelRequestParameters())
+    result = await StudioInputBudget().before_model_request(SimpleNamespace(usage=RunUsage()), request)
+    parts = {p.tool_call_id: p.content for m in result.messages for p in m.parts if isinstance(p, ToolReturnPart)}
+    assert parts["e"]["compacted"] is True
+    assert len(json.dumps(parts["e"])) <= limits.TOOL_RESULT_MAX_CHARS
+    assert parts["r"] == small
+    assert huge == original

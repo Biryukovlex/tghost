@@ -227,6 +227,15 @@ class StudioInputBudget(AbstractCapability):
         # result, later requests carry a short projection. Only the newest results
         # stay in full until they are used or the budget needs them shortened too.
         compacted = consumed
+        # No single result may dominate a request. A newest result above the cap is
+        # shortened like a used one; the archive keeps it in full.
+        cap = int(limits.TOOL_RESULT_MAX_CHARS)
+        for group, project in ((research, _compact),
+                               (others, lambda p: _compact_any(p, chars=int(limits.CONSUMED_TEXT_CHARS)))):
+            for part, payload in group:
+                if part.content is payload and len(json.dumps(payload, default=str, ensure_ascii=False)) > cap:
+                    part.content = project(payload)
+                    compacted += 1
         # Prefer older results; the latest can also yield to the hard bound.
         # Research results go first because they are the largest; every other
         # result follows through a generic projection. Detailed records remain
