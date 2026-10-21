@@ -62,7 +62,8 @@ async def ranked_passages(text: str, focus: str, *, offset: int = 0, budget: int
         used += size
         position += 1
     return {
-        "passages": [{"n": index + 1, "text": passages[index]} for index in sorted(chosen)],
+        # Shown in page order; rank 1 is the passage most relevant to the focus.
+        "passages": [{"n": index + 1, "rank": chosen.index(index) + 1, "text": passages[index]} for index in sorted(chosen)],
         "passages_total": len(passages),
         "ranked_by": ranked_by,
         "next_passage_offset": position if position < len(order) else None,

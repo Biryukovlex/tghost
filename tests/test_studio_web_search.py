@@ -229,3 +229,56 @@ async def test_reopening_pages_shares_the_read_cap(fake_embedder):
     deps.tool_call_counts["read_sources"] = limits.CHAT_MAX_READS
     blocked = await tools["get_research_sources"].function(ctx, source_ids=["id-0"], include_content=True)
     assert blocked["status"] == "read_limit_reached"
+
+
+@pytest.mark.asyncio
+async def test_results_the_model_acted_on_are_shortened_and_the_newest_stay_full():
+    from copy import deepcopy
+
+    from pydantic_ai.messages import ModelRequest, UserPromptPart
+    from pydantic_ai.models import ModelRequestContext
+    from pydantic_ai.models.test import TestModel
+    from pydantic_ai.usage import RunUsage
+    from pydantic_ai.models import ModelRequestParameters
+
+    from app.studio.budget import StudioInputBudget
+
+    search = {"search_outcome": "ok", "results": [{"source_id": "s1", "title": "Chip deal", "url": "https://fixture.test/a",
+                                                   "snippet": "Snippet " * 30}]}
+    page = {"pages": [{"source_id": "s1", "url": "https://fixture.test/a", "title": "Chip deal", "status": "ok",
+                       "passages": [{"n": 1, "rank": 2, "text": "Background " * 80},
+                                    {"n": 4, "rank": 1, "text": "The deal closed at 4 billion dollars. " * 30}],
+                       "passages_total": 9}]}
+    channel = {"studio_context": "Channel context " * 400}
+    newest = {"posts": [{"post_id": 7, "text": "Full post text " * 200}]}
+    original = deepcopy(page)
+    messages = [
+        ModelRequest(parts=[UserPromptPart("Research the chip deal")]),
+        ModelResponse(parts=[ToolCallPart("search_web", {}, tool_call_id="a"), ToolCallPart("get_channel_context", {}, tool_call_id="c")]),
+        ModelRequest(parts=[ToolReturnPart("search_web", search, tool_call_id="a"), ToolReturnPart("get_channel_context", channel, tool_call_id="c")]),
+        ModelResponse(parts=[ToolCallPart("read_sources", {}, tool_call_id="b")]),
+        ModelRequest(parts=[ToolReturnPart("read_sources", page, tool_call_id="b")]),
+        ModelResponse(parts=[ToolCallPart("read_channel_posts", {}, tool_call_id="d")]),
+        ModelRequest(parts=[ToolReturnPart("read_channel_posts", newest, tool_call_id="d")]),
+    ]
+    request = ModelRequestContext(model=TestModel(), messages=messages, model_settings=None,
+                                  model_request_parameters=ModelRequestParameters())
+    result = await StudioInputBudget().before_model_request(SimpleNamespace(usage=RunUsage()), request)
+    parts = {p.tool_call_id: p.content for m in result.messages for p in m.parts if isinstance(p, ToolReturnPart)}
+
+    assert parts["a"]["status"] == "compacted" and parts["a"]["sources"][0]["url"] == "https://fixture.test/a"
+    read = parts["b"]["sources"][0]
+    assert read["source_id"] == "s1" and read["passages_total"] == 9
+    assert [p["n"] for p in read["key_passages"]] == [4]
+    assert len(read["key_passages"][0]["text"]) <= limits.CONSUMED_TEXT_CHARS
+    assert parts["c"]["compacted"] is True and len(parts["c"]["studio_context"]) <= limits.CONSUMED_TEXT_CHARS
+    assert parts["d"] == newest
+    assert page == original
+
+
+@pytest.mark.asyncio
+async def test_read_passages_carry_their_relevance_rank(fake_embedder):
+    text = "\n".join(["Football scores from the weekend league games."] * 3 + ["Nvidia chip exports to China were restricted again."])
+    result = await ranked_passages(text, "chip export rules", budget=10_000)
+    ranks = {p["rank"]: p["text"] for p in result["passages"]}
+    assert "Nvidia" in ranks[1]

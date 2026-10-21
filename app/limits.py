@@ -63,6 +63,8 @@ READ_PAGES_PER_CALL = 3  # pages read per read_sources call
 READ_CHARS_PER_PAGE = 3_000  # ranked passage text returned per page
 PASSAGE_TARGET_CHARS = 600  # page passage size for ranking
 FIND_STORIES_MAX = 5  # story candidates returned by find_stories
+CONSUMED_TEXT_CHARS = 600  # longest text kept in a tool result the model has already responded to
+CONSUMED_KEY_PASSAGES = 1  # most relevant passages kept per page once a read result is consumed
 
 # Research and source reader bounds
 SEARCH_PROVIDER = "searxng"  # only supported provider
