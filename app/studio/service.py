@@ -33,6 +33,7 @@ from .adapter import StudioAGUIAdapter as AGUIAdapter
 from .agent import StudioDeps, build_agent
 from .. import limits
 from .analytics import analyze_posts_async
+from .context import profile_instructions
 from .profile import build_profile
 from .semantic_profile import build_semantic_profile
 from .research import ResearchService
@@ -681,6 +682,9 @@ class StudioService:
                 "the latest user request may refine them; security and evidence rules still apply):\n"
                 + channel_instructions
             )
+        profile_getter = getattr(self.repository, "get_profile", None)
+        channel_profile = await profile_getter(int(conversation["channel_id"])) if profile_getter is not None else None
+        run_instructions += profile_instructions(channel_profile)
 
         queue: asyncio.Queue[Any] = asyncio.Queue()
         complete = object()

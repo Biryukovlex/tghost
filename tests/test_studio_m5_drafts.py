@@ -141,7 +141,7 @@ def test_m5_agent_registers_all_draft_tools():
 
 
 @pytest.mark.asyncio
-async def test_channel_context_includes_profile_and_draft_pointer_with_on_demand_content():
+async def test_channel_context_points_to_profile_instructions_and_draft_with_on_demand_content():
     repository = MemoryStudioRepository()
     conversation = await repository.create_conversation(channel_id=1)
     await repository.upsert_profile(
@@ -173,7 +173,6 @@ async def test_channel_context_includes_profile_and_draft_pointer_with_on_demand
         ),
     )
     serialized = str(result.all_messages())
-    assert "technology" in serialized
     assert "draft_context" in serialized
     assert "History-aware draft" in serialized
 
@@ -181,6 +180,10 @@ async def test_channel_context_includes_profile_and_draft_pointer_with_on_demand
     context = next(part.content for part in tool_parts if part.tool_name == "get_channel_context")
     context = context.model_dump(mode="json") if hasattr(context, "model_dump") else context
     assert context["draft_context"]["content_tool"] == "get_draft"
+    # The profile travels in the run instructions, so the context only points to it.
+    assert context["studio_context"]["profile_block"] == ""
+    assert "CHANNEL PROFILE" in context["studio_context"]["profile_note"]
+    assert "technology" not in str(context)
     assert "History-aware draft" not in str(context)
     draft = next(part.content for part in tool_parts if part.tool_name == "get_draft")
     assert draft["draft"]["body"] == "History-aware draft"

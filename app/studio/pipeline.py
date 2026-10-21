@@ -197,7 +197,7 @@ def _context_prompt(material: dict[str, Any], request: str) -> str:
     covered = "\n".join(f"- {line}" for line in material["covered"] if line)
     return (f"Today is {datetime.now(timezone.utc).date().isoformat()} (UTC).\n\n"
             f"Channel owner's standing instructions:\n{material['owner_prompt'] or '(none)'}\n\n"
-            f"Channel profile:\n{material['profile'][:2500] or '(not built yet)'}\n\n"
+            f"Channel profile:\n{material['profile'] or '(not built yet)'}\n\n"
             f"Already covered by the channel (first lines of recent posts, newest first):\n{covered}\n\n"
             f"Owner's current request (it takes priority over the standing instructions):\n{request}")
 

@@ -143,6 +143,21 @@ def _sanitize_profile(value: Any, *, limit: int = 4_000) -> Any:
     return value
 
 
+def profile_instructions(profile: Mapping[str, Any] | None) -> str:
+    """The saved channel profile as part of the chat agent's run instructions.
+
+    The profile is owner-approved standing guidance, like the System Prompt, so
+    it travels with every model request instead of as a tool result that can be
+    skipped or shortened once used.
+    """
+
+    block = profile_block_from_mapping(profile)
+    if not block:
+        return ("\nCHANNEL PROFILE: none saved for this channel yet. Follow the owner's instructions "
+                "and the channel's own posts.")
+    return "\n\n" + block
+
+
 def profile_block_from_mapping(profile: Mapping[str, Any] | None) -> str:
     """Build the canonical Markdown channel-profile block for every tool."""
 
