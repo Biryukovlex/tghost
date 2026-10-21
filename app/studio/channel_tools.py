@@ -156,17 +156,24 @@ def style_brief(ranked: list[dict[str, Any]], rows: list[dict[str, Any]]) -> dic
     return {"target_length": target, "top_vs_rest": stats["top_posts_vs_rest"], "exemplars": exemplars}
 
 
+def opening(markdown: str) -> dict[str, Any]:
+    """The start of a post, enough to show its headline and formatting, and its full length."""
+    size = int(limits.TOP_POST_OPENING_CHARS)
+    text = markdown if len(markdown) <= size else markdown[:size].rstrip() + "…"
+    return {"opening": text, "length": len(markdown)}
+
+
 def register_channel_tools(agent, check_cancel) -> None:
     """Compact performance overview plus drill-down tools for the authenticated channel."""
 
-    next_hint = ("Use read_channel_posts(post_ids) for the full text of any listed post and "
+    next_hint = ("Use read_channel_posts(post_ids) for the full text of any listed or top post and "
                  "list_channel_posts(sort, offset, limit) to page through all posts.")
 
     @agent.tool
     async def get_performance_evidence(ctx: RunContext[Any]) -> dict[str, Any]:
         """Channel performance overview: statistics, how the top posts differ from the rest
-        (length, bold headline, bullets, emoji, links), the top posts in full Markdown and an
-        index of further posts. Takes no arguments; the app supplies the channel."""
+        (length, bold headline, bullets, emoji, links), the opening of each top post in Markdown
+        and an index of further posts. Takes no arguments; the app supplies the channel."""
 
         check_cancel(ctx)
         rows, raw, ranked = await ranked_posts(ctx.deps.repository, ctx.deps.channel_id)
@@ -174,7 +181,7 @@ def register_channel_tools(agent, check_cancel) -> None:
         top = ranked[: int(limits.TOP_POSTS)]
         ctx.deps.completed_tools.add("get_performance_evidence")
         return {"summary": summary_stats(rows, [row["post_id"] for row in top]),
-                "top_posts": [{**index_row(row, identifier), "text": post_markdown(row)[: int(limits.POST_TEXT_MAX_CHARS)]} for row in top],
+                "top_posts": [{**index_row(row, identifier), **opening(post_markdown(row))} for row in top],
                 "more_posts": [index_row(row, identifier) for row in ranked[len(top): len(top) + 12]],
                 "ranking": "Posts are ordered by the channel analytics score (views, shares, reactions and comments, adjusted for post age).",
                 "next": next_hint}

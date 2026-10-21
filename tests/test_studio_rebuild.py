@@ -90,7 +90,9 @@ async def test_performance_overview_is_compact_and_keeps_formatting():
     result = await tools["get_performance_evidence"].function(SimpleNamespace(deps=deps))
     assert len(json.dumps(result, default=str)) < 20_000
     assert len(result["top_posts"]) == limits.TOP_POSTS
-    assert result["top_posts"][0]["text"].startswith("**Release note")
+    top = result["top_posts"][0]
+    assert top["opening"].startswith("**Release note") and len(top["opening"]) <= limits.TOP_POST_OPENING_CHARS + 1
+    assert top["length"] >= len(top["opening"].rstrip("…"))
     assert result["top_posts"][0]["link"].startswith("https://t.me/sample_channel/")
     profile = result["summary"]["top_posts_vs_rest"]["top"]
     assert profile["share_bold_first_line"] == 1.0 and profile["share_with_bullets"] == 1.0

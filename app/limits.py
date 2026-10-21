@@ -29,7 +29,8 @@ MAX_EVIDENCE_POSTS = 20  # bounded post evidence objects in a context pack
 MIN_PROFILE_POSTS = 5  # minimum posts before a channel profile is considered ready
 
 # Channel tools and post pipeline bounds
-TOP_POSTS = 8  # top posts shown with full Markdown and used for the style brief
+TOP_POSTS = 8  # top posts in the performance overview and used for the style brief
+TOP_POST_OPENING_CHARS = 600  # opening Markdown of each top post in the overview; full text via read_channel_posts
 POST_TEXT_MAX_CHARS = 3_000  # Markdown characters per post returned to a model
 CHANNEL_INDEX_PAGE = 20  # maximum posts per list_channel_posts page
 NOVELTY_MAX_POSTS = 400  # most recent text posts/drafts compared for novelty and copying
