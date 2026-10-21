@@ -240,7 +240,7 @@ async def test_a_failed_fix_step_keeps_the_written_post(monkeypatch):
 async def test_turn_completes_even_when_older_results_are_compacted(monkeypatch):
     from app import limits
     # A small input budget forces compaction of the large channel results that precede the job.
-    monkeypatch.setattr(limits, "MAX_INPUT_TOKENS", 10_000)
+    monkeypatch.setattr(limits, "MAX_INPUT_TOKENS", 11_000)
     research = StubResearch(documents={OLD_LINK: "Payments framework details. " * 30})
     repository = PostsRepository()
     chat = await repository.create_conversation(channel_id=1)

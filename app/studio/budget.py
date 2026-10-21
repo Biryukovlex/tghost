@@ -44,13 +44,25 @@ def _payload(value: Any) -> dict[str, Any] | None:
     return deepcopy(value) if isinstance(value, dict) else None
 
 
+def _key_passages(item: dict[str, Any]) -> list[dict[str, Any]]:
+    """The most relevant passages of a read page, shortened; the rest stay in the archive."""
+    passages = [p for p in item.get("passages") or [] if isinstance(p, dict)]
+    best = sorted(passages, key=lambda p: int(p.get("rank") or 10**6))[: int(limits.CONSUMED_KEY_PASSAGES)]
+    size = int(limits.CONSUMED_TEXT_CHARS)
+    return [{"n": p.get("n"), "text": str(p.get("text") or "")[:size]} for p in best]
+
+
 def _compact(payload: dict[str, Any]) -> dict[str, Any]:
-    keys = ("source_id", "url", "title", "published_at", "accessible", "status", "has_read_content", "warnings")
+    keys = ("source_id", "url", "title", "published_at", "published", "accessible", "status", "has_read_content", "warnings")
+    # Read results keep each page's most relevant passage; search results keep their identifiers.
+    items = [item for key in ("sources", "pages", "results") for item in payload.get(key) or [] if isinstance(item, dict)]
     return {
         "status": "compacted",
         "continuation": "Use get_research_sources with selected_source_ids and include_content=true for stored details; read_sources can fetch unread pages.",
-        "selected_source_ids": payload.get("selected_source_ids", []) or [s.get("source_id") for s in payload.get("sources", [])],
-        "sources": [{k: s[k] for k in keys if k in s} for s in payload.get("sources", [])],
+        "selected_source_ids": payload.get("selected_source_ids", []) or [s.get("source_id") for s in items if s.get("source_id")],
+        "sources": [{**{k: s[k] for k in keys if k in s},
+                     **({"key_passages": _key_passages(s), "passages_total": s.get("passages_total")} if s.get("passages") else {})}
+                    for s in items],
         "stories": [{k: s[k] for k in ("cluster_id", "headline", "source_ids", "channel_evidence_ids", "channel_evidence_ref") if k in s} for s in payload.get("stories", [])],
         "channel_evidence_sets": payload.get("channel_evidence_sets", {}),
         "search_outcome": payload.get("search_outcome"),
@@ -68,21 +80,21 @@ def is_deliverable(tool_def: Any) -> bool:
     return bool((getattr(tool_def, "metadata", None) or {}).get("deliverable"))
 
 
-def _shrink(value: Any, *, depth: int = 0) -> Any:
+def _shrink(value: Any, *, depth: int = 0, chars: int = 300) -> Any:
     if isinstance(value, str):
-        return value if len(value) <= 300 else value[:299].rstrip() + "…"
+        return value if len(value) <= chars else value[:chars - 1].rstrip() + "…"
     if isinstance(value, list):
-        return [_shrink(item, depth=depth + 1) for item in value[:12]]
+        return [_shrink(item, depth=depth + 1, chars=chars) for item in value[:12]]
     if isinstance(value, dict):
         if depth > 4:
             return {"omitted": True}
-        return {key: _shrink(item, depth=depth + 1) for key, item in value.items()}
+        return {key: _shrink(item, depth=depth + 1, chars=chars) for key, item in value.items()}
     return value
 
 
-def _compact_any(payload: dict[str, Any]) -> dict[str, Any]:
+def _compact_any(payload: dict[str, Any], *, chars: int = 300) -> dict[str, Any]:
     """Projection for any non-research result: identifiers, status and short fields stay."""
-    return {**_shrink(payload), "compacted": True,
+    return {**_shrink(payload, chars=chars), "compacted": True,
             "continuation": "This older tool result was shortened to fit the context. Call the tool again for full details."}
 
 
@@ -133,7 +145,7 @@ def _job_completed(messages: list[Any], tools: list[Any]) -> bool:
     for part in getattr(latest, "parts", []):
         if isinstance(part, ToolReturnPart) and part.tool_name in completing:
             payload = _payload(part.content) or {}
-            if payload.get("status") in {"saved", "edited", "unchanged"}:
+            if payload.get("status") in {"saved", "edited", "unchanged", "found"}:
                 return True
     return False
 
@@ -146,11 +158,15 @@ class StudioInputBudget(AbstractCapability):
         # One agent can serve concurrent runs; lifecycle state is run-local.
         return StudioInputBudget()
 
-    async def before_tool_execute(self, ctx, *, call, tool_def, args):
-        # Finalization keeps only the tools that save the requested artifact.
+    async def wrap_tool_execute(self, ctx, *, call, tool_def, args, handler):
+        # Finalization keeps only the tools that deliver the requested artifact.
+        # A call to any other tool is answered instead of ending the run, so the
+        # finishing turn always produces a reply from the evidence already present.
         if self._finalizing and not is_deliverable(tool_def):
-            raise UsageLimitExceeded("The remaining run budget is reserved for a final response.")
-        return args
+            return {"status": "unavailable",
+                    "message": "The run budget is reserved for your final answer. Do not call more tools; answer the owner "
+                               "now from the evidence above and name what could not be checked."}
+        return await handler(args)
 
     async def after_model_request(self, ctx: RunContext[Any], *, request_context: ModelRequestContext, response):
         callback = getattr(ctx.deps, "on_model_response", None)
@@ -166,6 +182,9 @@ class StudioInputBudget(AbstractCapability):
         seen: set[str] = set()
         research: list[tuple[ToolReturnPart, dict[str, Any]]] = []
         others: list[tuple[ToolReturnPart, dict[str, Any]]] = []
+        # Results the model has already responded to: everything before the latest request.
+        latest = {id(part) for part in messages[-1].parts} if messages else set()
+        consumed = 0
         job_tools = {tool.name for tool in request_context.model_request_parameters.function_tools
                      if (getattr(tool, "metadata", None) or {}).get("completes_turn")}
         for message in messages:
@@ -180,11 +199,21 @@ class StudioInputBudget(AbstractCapability):
                     payload["channel_evidence_sets"] = {key: value for key, value in evidence.items() if key not in seen}
                     seen.update(evidence)
                 part.content = payload
+                if payload.get("status") == "compacted" or payload.get("compacted") is True:
+                    continue
+                used = id(part) not in latest
                 if part.tool_name in RESEARCH_TOOLS:
                     research.append((part, payload))
+                    if used:
+                        part.content = _compact(payload)
+                        consumed += 1
                 elif part.tool_name not in DRAFT_TOOLS and part.tool_name not in job_tools:
                     # Job results are small and carry the turn's outcome; they are never compacted.
+                    # Used results stay in the list so the budget can shorten them further.
                     others.append((part, payload))
+                    if used:
+                        part.content = _compact_any(payload, chars=int(limits.CONSUMED_TEXT_CHARS))
+                        consumed += 1
         request_context.messages = messages
         job_done = _job_completed(messages, request_context.model_request_parameters.function_tools)
         def count() -> int:
@@ -194,7 +223,10 @@ class StudioInputBudget(AbstractCapability):
         own_input = ctx.usage.input_tokens - int(getattr(getattr(ctx, "deps", None), "pipeline_input_tokens", 0) or 0)
         remaining = max(0, limits.MAX_RUN_INPUT_TOKENS - own_input)
         target = min(limits.MAX_INPUT_TOKENS, remaining)
-        compacted = 0
+        # Like tool-result clearing in coding agents: once the model has acted on a
+        # result, later requests carry a short projection. Only the newest results
+        # stay in full until they are used or the budget needs them shortened too.
+        compacted = consumed
         # Prefer older results; the latest can also yield to the hard bound.
         # Research results go first because they are the largest; every other
         # result follows through a generic projection. Detailed records remain

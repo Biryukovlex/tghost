@@ -16,9 +16,10 @@ TOOL_TIMEOUT_SECONDS = 30.0  # per-tool call timeout
 TOOL_CONCURRENCY = 6  # maximum concurrent tool executions
 MAX_TOOL_CALLS = 12  # agent tool-call budget per run
 DELIVERABLE_TOOL_CALLS = 2  # extra calls reserved so a finalizing turn can still save the draft
+HARD_TOOL_CALLS = 24  # safety net only: soft caps and finalization end research long before this
 MAX_OUTPUT_TOKENS = 16_384  # output per model request, including hidden reasoning
 MAX_RUN_OUTPUT_TOKENS = 96_000  # safety cap on cumulative output across a run and its pipeline steps
-CONTEXT_MAX_CHARS = 18_000  # maximum serialized evidence context for the agent
+CONTEXT_MAX_CHARS = 9_000  # serialized channel overview for the agent; details come from the channel tools
 TOOL_RESULT_MAX_CHARS = 48_000  # complete model-facing research result
 MAX_INPUT_TOKENS = 48_000  # estimated input per model request
 MAX_RUN_INPUT_TOKENS = 200_000  # cumulative input per agent run
@@ -28,7 +29,8 @@ MAX_EVIDENCE_POSTS = 20  # bounded post evidence objects in a context pack
 MIN_PROFILE_POSTS = 5  # minimum posts before a channel profile is considered ready
 
 # Channel tools and post pipeline bounds
-TOP_POSTS = 8  # top posts shown with full Markdown and used for the style brief
+TOP_POSTS = 8  # top posts in the performance overview and used for the style brief
+TOP_POST_OPENING_CHARS = 600  # opening Markdown of each top post in the overview; full text via read_channel_posts
 POST_TEXT_MAX_CHARS = 3_000  # Markdown characters per post returned to a model
 CHANNEL_INDEX_PAGE = 20  # maximum posts per list_channel_posts page
 NOVELTY_MAX_POSTS = 400  # most recent text posts/drafts compared for novelty and copying
@@ -44,6 +46,25 @@ PIPELINE_PAGE_CHARS = 3_500  # page text characters given to story extraction
 COPY_SHINGLE_WORDS = 8  # consecutive words that count as copied text
 PIPELINE_RATE_LIMIT_RETRIES = 2  # retries of one pipeline step after HTTP 429
 PIPELINE_RATE_LIMIT_BACKOFF_SECONDS = 20.0  # first wait when the provider gives no Retry-After hint
+
+# Local embeddings (paraphrase-multilingual-MiniLM-L12-v2, ONNX, fetched at image build)
+EMBEDDING_MODEL_DIR = "/opt/models/paraphrase-multilingual-MiniLM-L12-v2"  # model.onnx and tokenizer.json
+EMBEDDING_MAX_TOKENS = 128  # the model's trained input length
+EMBEDDING_DIMENSIONS = 384  # output vector size
+EMBEDDING_BATCH = 32  # texts per ONNX call
+EMBEDDING_THREADS = 4  # CPU threads for one embedding call; leaves cores for the app and database
+
+# Web research in chat: compact results the model can afford to accumulate
+CHAT_MAX_SEARCHES = 3  # search_web calls per run before the tool is hidden
+CHAT_MAX_READS = 2  # read_sources calls per run before the tool is hidden
+SEARCH_RESULTS_SHOWN = 10  # results returned to the model per search call
+SEARCH_SNIPPET_CHARS = 200  # snippet length per search result
+READ_PAGES_PER_CALL = 3  # pages read per read_sources call
+READ_CHARS_PER_PAGE = 3_000  # ranked passage text returned per page
+PASSAGE_TARGET_CHARS = 600  # page passage size for ranking
+FIND_STORIES_MAX = 5  # story candidates returned by find_stories
+CONSUMED_TEXT_CHARS = 600  # longest text kept in a tool result the model has already responded to
+CONSUMED_KEY_PASSAGES = 1  # most relevant passages kept per page once a read result is consumed
 
 # Research and source reader bounds
 SEARCH_PROVIDER = "searxng"  # only supported provider

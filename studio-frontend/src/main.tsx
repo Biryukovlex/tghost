@@ -138,6 +138,7 @@ const TOOL_ACTIVITY_LABELS: Record<string, string> = {
   read_channel_posts: "Reading channel posts",
   list_channel_posts: "Browsing channel posts",
   write_post: "Writing the post: research, style and checks",
+  find_stories: "Finding new stories for the channel",
   revise_draft: "Revising the draft",
 };
 
@@ -160,6 +161,7 @@ const TOOL_ACTIVITY_RESULT_LABELS: Record<string, string> = {
   read_channel_posts: "Channel posts loaded",
   list_channel_posts: "Channel post index loaded",
   write_post: "Post job finished",
+  find_stories: "Story candidates found",
   revise_draft: "Revision job finished",
 };
 

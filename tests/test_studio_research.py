@@ -160,4 +160,6 @@ async def test_agent_registers_research_tools_and_fails_closed_when_search_disab
     assert result.output == "research complete"
     assert "search_web" in str(result.all_messages())
     assert "disabled" in str(result.all_messages()).lower()
-    assert {"search_web", "read_sources", "compare_sources", "find_novel_topics"}.issubset(agent._function_toolset.tools)
+    # find_stories supersedes the old topic-suggestion tool for story discovery.
+    assert {"search_web", "read_sources", "compare_sources", "find_stories"}.issubset(agent._function_toolset.tools)
+    assert "find_novel_topics" not in agent._function_toolset.tools
