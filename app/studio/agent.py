@@ -399,7 +399,12 @@ def build_agent(settings, *, model=None) -> Agent[StudioDeps, str]:
         """
 
         _check_cancel(ctx)
-        ctx.deps.tool_call_counts["read_sources"] = ctx.deps.tool_call_counts.get("read_sources", 0) + 1
+        # Hiding the tool at the cap does not stop calls issued together in one step.
+        reads = ctx.deps.tool_call_counts.get("read_sources", 0)
+        if reads >= int(limits.CHAT_MAX_READS):
+            return {"status": "read_limit_reached",
+                    "message": "The read limit for this run is reached. Answer from the passages already read."}
+        ctx.deps.tool_call_counts["read_sources"] = reads + 1
         service = _research(ctx, settings)
         result = await service.read_sources(
             workspace_id=ctx.deps.workspace_id,

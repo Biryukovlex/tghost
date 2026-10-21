@@ -282,3 +282,14 @@ async def test_read_passages_carry_their_relevance_rank(fake_embedder):
     result = await ranked_passages(text, "chip export rules", budget=10_000)
     ranks = {p["rank"]: p["text"] for p in result["passages"]}
     assert "Nvidia" in ranks[1]
+
+
+@pytest.mark.asyncio
+async def test_reads_issued_together_still_respect_the_read_cap(fake_embedder):
+    research = ReadingResearch()
+    deps = await deps_with(research)
+    tools = build_agent(Settings(studio_test_mode=True))._function_toolset.tools
+    ctx = SimpleNamespace(deps=deps)
+    results = await asyncio.gather(*(tools["read_sources"].function(ctx, urls=[f"https://x.test/{n}"]) for n in range(3)))
+    assert [r.get("status") == "read_limit_reached" for r in results].count(True) == 3 - limits.CHAT_MAX_READS
+    assert len(research.reads) == limits.CHAT_MAX_READS
