@@ -2,7 +2,7 @@
 
 # Build the browser bundle in an isolated Node image.  The source tree stays
 # out of the runtime image; only the compiled Studio assets are copied below.
-FROM node:22-bookworm-slim AS frontend-build
+FROM node:25-bookworm-slim AS frontend-build
 
 WORKDIR /frontend
 COPY studio-frontend/package.json studio-frontend/package-lock.json ./
