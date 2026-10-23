@@ -14,4 +14,7 @@ regexes = [
     '''^0123456789abcdef0123456789abcdef$''',
     '''^decrypted/normalized$''',
     '''^test\-secret\-0123456789abcdef$''',
+    # Public sha256 of the pinned embedding model's tokenizer.json, checked by
+    # scripts/fetch_embedding_model.py; not a credential.
+    '''^2c3387be76557bd40970cec13153b3bbf80407865484b209e655e5e4729076b8$''',
 ]
