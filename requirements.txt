@@ -25,4 +25,4 @@ tokenizers==0.23.3
 numpy>=2,<3
 
 # Validated image attachments for Telegram publishing.
-Pillow==12.3.0
+Pillow==13.0.0

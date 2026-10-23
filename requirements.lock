@@ -5,7 +5,7 @@ annotated-types==0.8.0
 anyio==4.14.2
 APScheduler==3.11.3
 asyncpg==0.31.0
-certifi==2026.7.22
+certifi==2026.10.19
 cffi==2.1.1
 charset-normalizer==3.5.1
 click==8.4.2
@@ -37,7 +37,7 @@ mdurl==0.1.2
 numpy==2.5.4
 onnxruntime==1.31.0
 openai==3.19.0
-opentelemetry-api==1.44.0
+opentelemetry-api==1.45.1
 packaging==26.3
 protobuf==7.36.2
 pyaes==1.6.1
@@ -73,4 +73,4 @@ uvicorn[standard]==0.52.4
 uvloop==0.22.1
 watchfiles==1.2.0
 websockets==17.0.1
-Pillow==12.3.0
+Pillow==13.0.0
