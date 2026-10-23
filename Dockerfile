@@ -16,7 +16,7 @@ RUN npm run typecheck && npm run build
 # Install the Python application and keep the migration command in the same
 # image as the runtime.  Migrations are still an explicit deploy step in
 # Compose; the web/worker processes never run them implicitly.
-FROM python:3.12-slim AS runtime
+FROM python:3.14-slim AS runtime
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
